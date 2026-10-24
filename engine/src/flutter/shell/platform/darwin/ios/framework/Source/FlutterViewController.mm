@@ -649,14 +649,16 @@ static UIView* GetViewOrPlaceholder(UIView* existing_view) {
   static dispatch_once_t sbPatchOnce;
   dispatch_once(&sbPatchOnce, ^{
     NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
-    [defaults setObject:[NSString stringWithFormat:@"fp1:%d",
+    [defaults setObject:[NSString stringWithFormat:@"fp3:%d",
                                                    [NSProcessInfo processInfo].processIdentifier]
                  forKey:@"flutter.sb_engine_patch"];
     [defaults setInteger:0 forKey:@"flutter.sb_engine_drag_count"];
-    NSLog(@"Speakblend frame pacing patch fp1: texture_wait=%d raster_rr=%d sync_frame=%d "
-          @"managed_commits=%d",
+    NSLog(@"Speakblend frame pacing patch fp3: texture_wait=%d raster_rr=%d sync_frame=%d "
+          @"managed_commits=%d idle_after_submit=%d submit_first=%d merge_overlays=%d",
           SBFramePacingEnabled(@"texture_wait"), SBFramePacingEnabled(@"raster_rr"),
-          SBFramePacingEnabled(@"sync_frame"), SBFramePacingEnabled(@"managed_commits"));
+          SBFramePacingEnabled(@"sync_frame"), SBFramePacingEnabled(@"managed_commits"),
+          SBFramePacingEnabled(@"idle_after_submit"), SBFramePacingEnabled(@"submit_first"),
+          SBFramePacingEnabled(@"merge_overlays"));
   });
 }
 

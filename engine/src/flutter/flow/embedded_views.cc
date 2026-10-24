@@ -30,6 +30,10 @@ void DisplayListEmbedderViewSlice::render_into(DlCanvas* canvas) {
   canvas->DrawDisplayList(display_list_);
 }
 
+bool DisplayListEmbedderViewSlice::has_root_backdrop_filter() const {
+  return display_list_ && display_list_->root_has_backdrop_filter();
+}
+
 void DisplayListEmbedderViewSlice::dispatch(DlOpReceiver& receiver) {
   display_list_->Dispatch(receiver);
 }

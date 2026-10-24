@@ -169,6 +169,72 @@ static void ApplyNonRectClipToOverlayCanvas(flutter::DlCanvas* overlay_canvas,
   }
 }
 
+// Speakblend: overlays drawn into one overlay layer. Upstream gives every
+// platform view with Flutter content above it its own overlay, a full-screen
+// surface that the GPU clears and stores every frame, so screens with many
+// small native views pay for many full-screen surfaces.
+struct OverlayGroup {
+  // The view the layer is placed above: the group's last member.
+  int64_t anchor_view_id;
+  // Views whose overlay content the layer holds, in composition order.
+  std::vector<int64_t> view_ids;
+  // Union of the members' overlay rects.
+  DlRect bounds;
+};
+
+// Speakblend: groups the overlays in composition order so that a layer can
+// hold several of them without changing any pixel.
+// - The layer sits above the group's last member, so an earlier member's
+//   content moves above the views composited after it. A view whose bounds,
+//   grown by `viewMargin` for effects drawn past the view's frame, touch a
+//   member's rect closes the group, which keeps that member under the view.
+// - Members' rects are disjoint, so no member's blend modes or clears reach
+//   another member's pixels.
+// - A slice with a root backdrop filter reads the canvas it is drawn into, so
+//   it starts a group, where nothing is drawn before it.
+// Without `merge` every overlay gets its own group, as upstream.
+static std::vector<OverlayGroup> GroupOverlays(
+    const std::vector<int64_t>& compositionOrder,
+    const std::unordered_map<int64_t, DlRect>& overlayRects,
+    const std::unordered_map<int64_t, DlRect>& viewRects,
+    const std::unordered_set<int64_t>& viewsWithRootBackdropFilter,
+    flutter::DlScalar viewMargin,
+    bool merge) {
+  std::vector<OverlayGroup> groups;
+  // Whether groups.back() can take another member.
+  bool open = false;
+  auto touchesMember = [&](const DlRect& rect) {
+    for (int64_t memberId : groups.back().view_ids) {
+      if (overlayRects.at(memberId).IntersectsWithRect(rect)) {
+        return true;
+      }
+    }
+    return false;
+  };
+  for (int64_t viewId : compositionOrder) {
+    if (open) {
+      auto viewRect = viewRects.find(viewId);
+      open = viewRect != viewRects.end() &&
+             !touchesMember(DlRect::RoundOut(viewRect->second).Expand(viewMargin));
+    }
+    auto overlay = overlayRects.find(viewId);
+    if (overlay == overlayRects.end()) {
+      continue;
+    }
+    if (open && viewsWithRootBackdropFilter.count(viewId) == 0 &&
+        !touchesMember(overlay->second)) {
+      OverlayGroup& group = groups.back();
+      group.anchor_view_id = viewId;
+      group.view_ids.push_back(viewId);
+      group.bounds = group.bounds.Union(overlay->second);
+    } else {
+      groups.push_back({viewId, {viewId}, overlay->second});
+      open = merge;
+    }
+  }
+  return groups;
+}
+
 @interface FlutterPlatformViewsController ()
 
 // The pool of reusable view layers. The pool allows to recycle layer in each frame.
@@ -331,6 +397,12 @@ static void ApplyNonRectClipToOverlayCanvas(flutter::DlCanvas* overlay_canvas,
   // Speakblend: submitFrame posts the platform view submit ahead of the tasks
   // already queued on the platform thread.
   BOOL _submitFirst;
+  // Speakblend: submitFrame draws overlays that can share a layer into one
+  // (see GroupOverlays).
+  BOOL _mergeOverlays;
+  // Speakblend: how far past its frame a platform view may draw, in physical
+  // pixels. Native glass draws its rim and shadow outside its frame.
+  flutter::DlScalar _overlayViewMargin;
 }
 
 - (id)init {
@@ -341,6 +413,8 @@ static void ApplyNonRectClipToOverlayCanvas(flutter::DlCanvas* overlay_canvas,
     _hadPlatformViews = NO;
     _canApplyBlurBackdrop = YES;
     _submitFirst = SBFramePacingEnabled(@"submit_first");
+    _mergeOverlays = SBFramePacingEnabled(@"merge_overlays");
+    _overlayViewMargin = static_cast<flutter::DlScalar>(16 * [UIScreen mainScreen].scale);
   }
   return self;
 }
@@ -871,26 +945,25 @@ static void ApplyNonRectClipToOverlayCanvas(flutter::DlCanvas* overlay_canvas,
       SliceViews(background_frame->Canvas(), self.compositionOrder, self.slices, viewRects,
                  viewsWithUnderlayPreserved);
 
-  size_t requiredOverlayLayers = 0;
-  for (int64_t viewId : self.compositionOrder) {
-    std::unordered_map<int64_t, DlRect>::const_iterator overlay = overlayLayers.find(viewId);
-    if (overlay == overlayLayers.end()) {
-      continue;
+  std::unordered_set<int64_t> viewsWithRootBackdropFilter;
+  if (_mergeOverlays) {
+    for (const auto& overlay : overlayLayers) {
+      if (self.slices[overlay.first]->has_root_backdrop_filter()) {
+        viewsWithRootBackdropFilter.insert(overlay.first);
+      }
     }
-    requiredOverlayLayers++;
   }
+  std::vector<OverlayGroup> overlayGroups =
+      GroupOverlays(self.compositionOrder, overlayLayers, viewRects, viewsWithRootBackdropFilter,
+                    _overlayViewMargin, _mergeOverlays);
 
   // If there are not sufficient overlay layers, we must construct them on the platform
   // thread, at least until we've refactored iOS surface creation to use IOSurfaces
   // instead of CALayers.
-  [self createMissingOverlays:requiredOverlayLayers withIosContext:iosContext];
+  [self createMissingOverlays:overlayGroups.size() withIosContext:iosContext];
 
   int64_t overlayId = 0;
-  for (int64_t viewId : self.compositionOrder) {
-    std::unordered_map<int64_t, DlRect>::const_iterator overlay = overlayLayers.find(viewId);
-    if (overlay == overlayLayers.end()) {
-      continue;
-    }
+  for (const OverlayGroup& group : overlayGroups) {
     std::shared_ptr<flutter::OverlayLayer> layer = self.nextLayerInPool;
     if (!layer) {
       continue;
@@ -902,15 +975,22 @@ static void ApplyNonRectClipToOverlayCanvas(flutter::DlCanvas* overlay_canvas,
       continue;
     }
     flutter::DlCanvas* overlayCanvas = frame->Canvas();
-    int restoreCount = overlayCanvas->GetSaveCount();
-    overlayCanvas->Save();
-    overlayCanvas->ClipRect(overlay->second);
-    if (viewsWithUnderlayPreserved.find(viewId) != viewsWithUnderlayPreserved.end()) {
-      ApplyNonRectClipToOverlayCanvas(overlayCanvas, self.currentCompositionParams[viewId]);
+    if (group.view_ids.size() > 1) {
+      // Speakblend: the layer shows the union of the members' rects, so the
+      // gaps between them must be clear too.
+      overlayCanvas->Clear(flutter::DlColor::kTransparent());
     }
-    overlayCanvas->Clear(flutter::DlColor::kTransparent());
-    self.slices[viewId]->render_into(overlayCanvas);
-    overlayCanvas->RestoreToCount(restoreCount);
+    for (int64_t viewId : group.view_ids) {
+      int restoreCount = overlayCanvas->GetSaveCount();
+      overlayCanvas->Save();
+      overlayCanvas->ClipRect(overlayLayers[viewId]);
+      if (viewsWithUnderlayPreserved.find(viewId) != viewsWithUnderlayPreserved.end()) {
+        ApplyNonRectClipToOverlayCanvas(overlayCanvas, self.currentCompositionParams[viewId]);
+      }
+      overlayCanvas->Clear(flutter::DlColor::kTransparent());
+      self.slices[viewId]->render_into(overlayCanvas);
+      overlayCanvas->RestoreToCount(restoreCount);
+    }
 
     // This flutter view is never the last in a frame, since we always submit the
     // underlay view last.
@@ -918,11 +998,11 @@ static void ApplyNonRectClipToOverlayCanvas(flutter::DlCanvas* overlay_canvas,
     layer->did_submit_last_frame = frame->Encode();
 
     didEncode &= layer->did_submit_last_frame;
-    platformViewLayers[viewId] = LayerData{
-        .rect = overlay->second,  //
-        .view_id = viewId,        //
-        .overlay_id = overlayId,  //
-        .layer = layer            //
+    platformViewLayers[group.anchor_view_id] = LayerData{
+        .rect = group.bounds,             //
+        .view_id = group.anchor_view_id,  //
+        .overlay_id = overlayId,          //
+        .layer = layer                    //
     };
     surfaceFrames.push_back(std::move(frame));
     overlayId++;

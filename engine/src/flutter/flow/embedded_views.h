@@ -381,6 +381,11 @@ class EmbedderViewSlice {
   }
 
   virtual void render_into(DlCanvas* canvas) = 0;
+
+  // Speakblend: whether the recording draws a backdrop filter straight onto
+  // the canvas it is rendered into, so the filter reads what that canvas
+  // already holds. Valid after end_recording.
+  virtual bool has_root_backdrop_filter() const { return false; }
 };
 
 class DisplayListEmbedderViewSlice : public EmbedderViewSlice {
@@ -393,6 +398,7 @@ class DisplayListEmbedderViewSlice : public EmbedderViewSlice {
   const DlRegion& getRegion() const override;
 
   void render_into(DlCanvas* canvas) override;
+  bool has_root_backdrop_filter() const override;
   void dispatch(DlOpReceiver& receiver);
   bool is_empty();
   bool recording_ended();
