@@ -41,6 +41,8 @@ jobs:
           if [ -z "$xcode" ]; then
             xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
           fi
+          # Some names are symlinks; the cleanup below must keep the real app.
+          xcode=$(realpath "$xcode")
           echo "Using $xcode"
           sudo xcode-select -s "$xcode"
           xcodebuild -version
@@ -50,10 +52,11 @@ jobs:
         run: |
           df -h /
           for app in /Applications/Xcode*.app; do
-            if [ "$app" != "$SELECTED_XCODE" ] && [ ! -L "$app" ]; then
+            if [ ! -L "$app" ] && [ "$(realpath "$app")" != "$SELECTED_XCODE" ]; then
               sudo rm -rf "$app"
             fi
           done
+          xcrun --sdk iphoneos --show-sdk-path
           sudo rm -rf "$HOME/Library/Android" /usr/local/lib/android || true
           for tool in CodeQL go Ruby PyPy node; do
             sudo rm -rf "$AGENT_TOOLSDIRECTORY/$tool" || true
