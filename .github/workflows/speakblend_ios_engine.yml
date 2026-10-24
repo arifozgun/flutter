@@ -4,6 +4,9 @@
 # mode, packaged like the official Flutter.xcframework slice: release is
 # stripped and ships a dSYM, profile is unstripped. The Dart VM is unchanged,
 # so the official gen_snapshot and simulator slices stay in use.
+#
+# Compiles go through ccache, kept in the Actions cache per mode, so a build
+# after a small engine change only recompiles the changed files.
 name: Speakblend iOS engine
 
 on:
@@ -17,8 +20,9 @@ on:
 permissions:
   contents: write
 
+# Runs that publish the same tag wait for each other; other runs never wait.
 concurrency:
-  group: speakblend-ios-engine-${{ github.ref }}
+  group: speakblend-ios-engine-${{ inputs.release_tag || github.run_id }}
   cancel-in-progress: false
 
 jobs:
@@ -33,6 +37,13 @@ jobs:
     env:
       DEPOT_TOOLS_UPDATE: '0'
       DEPOT_TOOLS_METRICS: '0'
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      # The compiler comes from DEPS, whose hash is part of the cache key.
+      CCACHE_COMPILERCHECK: none
+      # A fresh checkout gives every header a new mtime.
+      CCACHE_SLOPPINESS: include_file_ctime,include_file_mtime,time_macros
+      CCACHE_MAXSIZE: 4G
     steps:
       - name: Select Xcode 26
         run: |
@@ -72,10 +83,22 @@ jobs:
           path: flutter
           fetch-depth: 1
 
-      - name: Install depot_tools
+      - name: Install depot_tools and ccache
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
         run: |
           git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
           echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+          brew install ccache
+          ccache --version | head -1
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-ios-${{ matrix.mode }}-${{ hashFiles('flutter/DEPS') }}-${{ github.run_id }}
+          restore-keys: ccache-ios-${{ matrix.mode }}-${{ hashFiles('flutter/DEPS') }}-
 
       - name: gclient sync
         working-directory: flutter
@@ -103,7 +126,7 @@ jobs:
 
       - name: gn
         working-directory: flutter/engine/src
-        run: ./flutter/tools/gn --ios --runtime-mode ${{ matrix.mode }} --no-rbe --no-goma
+        run: ./flutter/tools/gn --ios --runtime-mode ${{ matrix.mode }} --no-rbe --no-goma --ccache
 
       - name: ninja
         working-directory: flutter/engine/src
@@ -113,9 +136,18 @@ jobs:
           if [ ! -x "$ninja" ]; then
             ninja=$(find "$GITHUB_WORKSPACE/flutter" -path '*third_party/ninja/ninja' -type f | head -1)
           fi
+          ccache --zero-stats
           "$ninja" -j 4 -C out/ios_${{ matrix.mode }} \
             flutter/shell/platform/darwin/ios:flutter_framework
+          ccache --show-stats
           df -h /
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-ios-${{ matrix.mode }}-${{ hashFiles('flutter/DEPS') }}-${{ github.run_id }}
 
       - name: Package
         env:
