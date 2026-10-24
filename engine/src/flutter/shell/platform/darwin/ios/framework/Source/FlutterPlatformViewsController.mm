@@ -14,6 +14,7 @@
 #include "flutter/fml/make_copyable.h"
 #include "flutter/fml/synchronization/count_down_latch.h"
 #import "flutter/shell/platform/darwin/common/InternalFlutterSwiftCommon/InternalFlutterSwiftCommon.h"
+#import "flutter/shell/platform/darwin/ios/framework/Source/FlutterFMLTaskRunner+FML.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterOverlayView.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterView.h"
 #include "flutter/shell/platform/darwin/ios/framework/Source/overlay_layer_pool.h"
@@ -30,6 +31,15 @@ static NSString* const kGestureBlockingPolicyEagerValue = @"eager";
 static NSString* const kGestureBlockingPolicyWaitUntilTouchesEndedValue = @"waitUntilTouchesEnded";
 static NSString* const kGestureBlockingPolicyDoNotBlockGesture = @"doNotBlockGesture";
 static NSString* const kGestureBlockingPolicyFallbackToPluginDefault = @"fallbackToPluginDefault";
+
+// Speakblend frame pacing patch. The app turns a change off by setting the
+// "flutter.sb_engine_<name>" user default (shared_preferences key
+// "sb_engine_<name>") to false. It is read when the controller is created.
+static BOOL SBFramePacingEnabled(NSString* name) {
+  id value = [[NSUserDefaults standardUserDefaults]
+      objectForKey:[@"flutter.sb_engine_" stringByAppendingString:name]];
+  return ![value respondsToSelector:@selector(boolValue)] || [value boolValue];
+}
 
 struct LayerData {
   DlRect rect;
@@ -248,6 +258,9 @@ static CGRect GetCGRectFromDlRect(const DlRect& clipDlRect) {
   std::vector<int64_t> _visitedPlatformViews;
   std::unordered_set<int64_t> _viewsToRecomposite;
   std::vector<int64_t> _previousCompositionOrder;
+  // Speakblend: submitFrame posts the platform view submit ahead of the tasks
+  // already queued on the platform thread.
+  BOOL _submitFirst;
 }
 
 - (id)init {
@@ -259,6 +272,7 @@ static CGRect GetCGRectFromDlRect(const DlRect& clipDlRect) {
         [[FlutterClippingMaskViewPool alloc] initWithCapacity:kFlutterClippingMaskViewPoolCapacity];
     _hadPlatformViews = NO;
     _canApplyBlurBackdrop = YES;
+    _submitFirst = SBFramePacingEnabled(@"submit_first");
   }
   return self;
 }
@@ -863,9 +877,17 @@ static CGRect GetCGRectFromDlRect(const DlRect& clipDlRect) {
                    surfaceFrames:surfaceFrames];
   });
 
-  [self.taskRunner runNowOrPostTask:^{
-    task();
-  }];
+  if (_submitFirst && ![self.taskRunner runsTasksOnCurrentThread]) {
+    // Speakblend: with merged platform and UI threads, this queue also holds
+    // idle notifications, Dart messages and timers. A target time before every
+    // queued task runs the submit as soon as the current task returns, so none
+    // of them holds the frame past its deadline.
+    [self.taskRunner taskRunner]->PostTaskForTime(task, fml::TimePoint());
+  } else {
+    [self.taskRunner runNowOrPostTask:^{
+      task();
+    }];
+  }
   return didEncode;
 }
 
