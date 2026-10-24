@@ -7,23 +7,18 @@
 #
 # Compiles go through ccache, kept in the Actions cache per mode, so a build
 # after a small engine change only recompiles the changed files.
+#
+# The run only uploads artifacts. The workflow token gets HTTP 403 when it
+# creates a release here, so check the artifacts and publish them locally:
+#   gh run download <run id> -R arifozgun/flutter -D <dir>
+#   gh release create <tag> <dir>/*/* -R arifozgun/flutter --target <run commit>
 name: Speakblend iOS engine
 
 on:
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: Publish the frameworks as a GitHub release with this tag (empty skips it)
-        required: false
-        type: string
 
 permissions:
-  contents: write
-
-# Runs that publish the same tag wait for each other; other runs never wait.
-concurrency:
-  group: speakblend-ios-engine-${{ inputs.release_tag || github.run_id }}
-  cancel-in-progress: false
+  contents: read
 
 jobs:
   build:
@@ -188,24 +183,3 @@ jobs:
           name: flutter-ios-${{ matrix.mode }}
           path: dist/*
           if-no-files-found: error
-
-  publish:
-    needs: build
-    if: ${{ inputs.release_tag != '' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release_tag }}
-        run: |
-          gh release create "$TAG" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
-            --title "$TAG" \
-            --notes "iOS Flutter.framework (ios-arm64) with the Speakblend frame pacing patch, built from ${GITHUB_SHA}."
