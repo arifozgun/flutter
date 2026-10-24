@@ -18,6 +18,15 @@ FLUTTER_ASSERT_ARC
 @class FlutterTexture;
 @class FlutterDrawable;
 
+// Speakblend frame pacing patch. The app turns a change off by setting the
+// "flutter.sb_engine_<name>" user default (shared_preferences key
+// "sb_engine_<name>") to false. It is read when the layer is created.
+static BOOL SBFramePacingEnabled(NSString* name) {
+  id value = [[NSUserDefaults standardUserDefaults]
+      objectForKey:[@"flutter.sb_engine_" stringByAppendingString:name]];
+  return ![value respondsToSelector:@selector(boolValue)] || [value boolValue];
+}
+
 @interface FlutterMetalLayer () {
   id<MTLDevice> _preferredDevice;
   CGSize _drawableSize;
@@ -28,10 +37,19 @@ FLUTTER_ASSERT_ARC
   NSMutableSet<FlutterTexture*>* _availableTextures;
   NSUInteger _totalTextures;
   FlutterTexture* _front;
+
+  // Speakblend: nextTexture sleeps on this condition until a texture is
+  // returned, presented or finishes rendering, instead of spinning. A spinning
+  // raster thread holds a performance core and keeps the scheduler from moving
+  // the main thread onto one. _textureGeneration counts those changes.
+  NSCondition* _textureCondition;
+  NSUInteger _textureGeneration;
+  BOOL _waitForTextures;
 }
 
 - (void)presentTexture:(FlutterTexture*)texture;
 - (void)returnTexture:(FlutterTexture*)texture;
+- (void)signalTextureChange;
 
 @end
 
@@ -127,9 +145,11 @@ FLUTTER_ASSERT_ARC
 
 - (void)flutterPrepareForPresent:(nonnull id<MTLCommandBuffer>)commandBuffer {
   FlutterTexture* texture = _texture;
+  __weak FlutterMetalLayer* layer = _layer;
   texture.waitingForCompletion = YES;
   [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
     texture.waitingForCompletion = NO;
+    [layer signalTextureChange];
   }];
 }
 
@@ -143,6 +163,8 @@ FLUTTER_ASSERT_ARC
     self.device = self.preferredDevice;
     self.pixelFormat = MTLPixelFormatBGRA8Unorm;
     _availableTextures = [[NSMutableSet alloc] init];
+    _textureCondition = [[NSCondition alloc] init];
+    _waitForTextures = SBFramePacingEnabled(@"texture_wait");
 
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(didEnterBackground:)
@@ -174,6 +196,7 @@ FLUTTER_ASSERT_ARC
     _totalTextures = 0;
     _drawableSize = drawableSize;
   }
+  [self signalTextureChange];
 }
 
 - (void)didEnterBackground:(id)notification {
@@ -181,6 +204,7 @@ FLUTTER_ASSERT_ARC
     [_availableTextures removeAllObjects];
     _totalTextures = _front != nil ? 1 : 0;
   }
+  [self signalTextureChange];
 }
 
 - (CGSize)drawableSize {
@@ -240,6 +264,7 @@ FLUTTER_ASSERT_ARC
 - (FlutterTexture*)nextTexture {
   CFTimeInterval start = CACurrentMediaTime();
   while (true) {
+    NSUInteger generation = [self textureGeneration];
     FlutterTexture* texture = [self tryNextTexture];
     if (texture != nil) {
       return texture;
@@ -249,7 +274,34 @@ FLUTTER_ASSERT_ARC
       NSLog(@"Waited %f seconds for a drawable, giving up.", elapsed);
       return nil;
     }
+    if (_waitForTextures) {
+      [self waitForTextureChangeAfter:generation];
+    }
   }
+}
+
+- (NSUInteger)textureGeneration {
+  [_textureCondition lock];
+  NSUInteger generation = _textureGeneration;
+  [_textureCondition unlock];
+  return generation;
+}
+
+// Sleeps until signalTextureChange runs after `generation` was read. The short
+// timeout only bounds the delay if a change is ever not signaled.
+- (void)waitForTextureChangeAfter:(NSUInteger)generation {
+  [_textureCondition lock];
+  if (_textureGeneration == generation) {
+    [_textureCondition waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
+  }
+  [_textureCondition unlock];
+}
+
+- (void)signalTextureChange {
+  [_textureCondition lock];
+  ++_textureGeneration;
+  [_textureCondition broadcast];
+  [_textureCondition unlock];
 }
 
 - (FlutterTexture*)tryNextTexture {
@@ -361,6 +413,7 @@ FLUTTER_ASSERT_ARC
       });
     }
   }
+  [self signalTextureChange];
 }
 
 - (void)returnTexture:(FlutterTexture*)texture {
@@ -373,6 +426,7 @@ FLUTTER_ASSERT_ARC
       [_availableTextures addObject:texture];
     }
   }
+  [self signalTextureChange];
 }
 
 + (BOOL)enabled {
