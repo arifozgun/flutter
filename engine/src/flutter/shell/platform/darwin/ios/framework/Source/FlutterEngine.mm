@@ -46,6 +46,15 @@
 
 FLUTTER_ASSERT_ARC
 
+// Speakblend frame pacing patch. The app turns a change off by setting the
+// "flutter.sb_engine_<name>" user default (shared_preferences key
+// "sb_engine_<name>") to false. It is read when the thread starts.
+static BOOL SBFramePacingEnabled(NSString* name) {
+  id value = [[NSUserDefaults standardUserDefaults]
+      objectForKey:[@"flutter.sb_engine_" stringByAppendingString:name]];
+  return ![value respondsToSelector:@selector(boolValue)] || [value boolValue];
+}
+
 /// Inheriting ThreadConfigurer and use iOS platform thread API to configure the thread priorities
 /// Using iOS platform thread API to configure thread priority
 static void IOSPlatformThreadConfigSetter(const fml::Thread::ThreadConfig& config) {
@@ -73,6 +82,14 @@ static void IOSPlatformThreadConfigSetter(const fml::Thread::ThreadConfig& confi
       pthread_t thread = pthread_self();
       if (!pthread_getschedparam(thread, &policy, &param)) {
         param.sched_priority = 50;
+        // Speakblend: a fixed round-robin priority keeps the raster thread out
+        // of timeshare priority decay and out of the clutch scheduler's
+        // deadline-based bucket selection, which can make it wait behind lower
+        // QoS work. Apple recommends SCHED_RR for per-frame render threads.
+        if (config.priority == fml::Thread::ThreadPriority::kRaster &&
+            SBFramePacingEnabled(@"raster_rr")) {
+          policy = SCHED_RR;
+        }
         pthread_setschedparam(thread, policy, &param);
       }
       break;

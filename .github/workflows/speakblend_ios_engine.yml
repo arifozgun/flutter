@@ -1,0 +1,176 @@
+# Builds the iOS engine with the Speakblend frame pacing patch.
+#
+# Produces the device (ios-arm64) Flutter.framework for release and profile
+# mode, packaged like the official Flutter.xcframework slice: release is
+# stripped and ships a dSYM, profile is unstripped. The Dart VM is unchanged,
+# so the official gen_snapshot and simulator slices stay in use.
+name: Speakblend iOS engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Publish the frameworks as a GitHub release with this tag (empty skips it)
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: speakblend-ios-engine-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ios_${{ matrix.mode }}
+    runs-on: macos-15
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [release, profile]
+    env:
+      DEPOT_TOOLS_UPDATE: '0'
+      DEPOT_TOOLS_METRICS: '0'
+    steps:
+      - name: Select Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app
+          xcode=$(ls -d /Applications/Xcode_26.2*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$xcode" ]; then
+            xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          fi
+          echo "Using $xcode"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          echo "SELECTED_XCODE=$xcode" >> "$GITHUB_ENV"
+
+      - name: Free disk space
+        run: |
+          df -h /
+          for app in /Applications/Xcode*.app; do
+            if [ "$app" != "$SELECTED_XCODE" ] && [ ! -L "$app" ]; then
+              sudo rm -rf "$app"
+            fi
+          done
+          sudo rm -rf "$HOME/Library/Android" /usr/local/lib/android || true
+          for tool in CodeQL go Ruby PyPy node; do
+            sudo rm -rf "$AGENT_TOOLSDIRECTORY/$tool" || true
+          done
+          sudo rm -rf "$HOME/Library/Developer/CoreSimulator/Caches" || true
+          df -h /
+
+      - name: Install Rosetta
+        run: sudo softwareupdate --install-rosetta --agree-to-license || true
+
+      - uses: actions/checkout@v4
+        with:
+          path: flutter
+          fetch-depth: 1
+
+      - name: Install depot_tools
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+
+      - name: gclient sync
+        working-directory: flutter
+        run: |
+          cat > .gclient <<'EOF'
+          solutions = [
+            {
+              "custom_deps": {},
+              "deps_file": "DEPS",
+              "managed": False,
+              "name": ".",
+              "safesync_url": "",
+              "url": "https://github.com/flutter/flutter.git",
+              "custom_vars": {
+                "download_android_deps": False,
+                "download_jdk": False,
+                "download_esbuild": False,
+                "setup_githooks": False,
+              },
+            },
+          ]
+          EOF
+          gclient sync -D --no-history --jobs 8
+          df -h /
+
+      - name: gn
+        working-directory: flutter/engine/src
+        run: ./flutter/tools/gn --ios --runtime-mode ${{ matrix.mode }} --no-rbe --no-goma
+
+      - name: ninja
+        working-directory: flutter/engine/src
+        run: |
+          # DEPS puts ninja under the gclient root, not under engine/src.
+          ninja="$GITHUB_WORKSPACE/flutter/third_party/ninja/ninja"
+          if [ ! -x "$ninja" ]; then
+            ninja=$(find "$GITHUB_WORKSPACE/flutter" -path '*third_party/ninja/ninja' -type f | head -1)
+          fi
+          "$ninja" -j 4 -C out/ios_${{ matrix.mode }} \
+            flutter/shell/platform/darwin/ios:flutter_framework
+          df -h /
+
+      - name: Package
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+          out="flutter/engine/src/out/ios_${MODE}"
+          dist="$GITHUB_WORKSPACE/dist"
+          stage="$RUNNER_TEMP/stage"
+          mkdir -p "$dist" "$stage"
+          cp -R "$out/Flutter.framework" "$stage/"
+          binary="$stage/Flutter.framework/Flutter"
+          if [ "$MODE" = release ]; then
+            # Same steps as create_ios_framework.py --dsym --strip.
+            flutter/engine/src/flutter/buildtools/mac-arm64/clang/bin/dsymutil \
+              -o "$stage/Flutter.framework.dSYM" "$binary"
+            strip -x -S "$binary"
+          fi
+          lipo -info "$binary"
+          (cd "$stage" && ditto -c -k --keepParent Flutter.framework \
+            "$dist/Flutter.framework-ios-${MODE}.zip")
+          if [ -d "$stage/Flutter.framework.dSYM" ]; then
+            (cd "$stage" && ditto -c -k --keepParent Flutter.framework.dSYM \
+              "$dist/Flutter.framework.dSYM-ios-${MODE}.zip")
+          fi
+          {
+            echo "mode: ${MODE}"
+            echo "commit: ${GITHUB_SHA}"
+            echo "xcode: $(xcodebuild -version | tr '\n' ' ')"
+            echo "binary_sha256: $(shasum -a 256 "$binary" | cut -d' ' -f1)"
+            echo "files:"
+            (cd "$stage/Flutter.framework" && find . -type f | sort)
+          } > "$dist/manifest-ios-${MODE}.txt"
+          cat "$dist/manifest-ios-${MODE}.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flutter-ios-${{ matrix.mode }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: ${{ inputs.release_tag != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes "iOS Flutter.framework (ios-arm64) with the Speakblend frame pacing patch, built from ${GITHUB_SHA}."

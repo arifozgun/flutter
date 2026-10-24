@@ -20,6 +20,15 @@ FLUTTER_ASSERT_ARC
 
 extern CFTimeInterval display_link_target;
 
+// Speakblend frame pacing patch. The app turns a change off by setting the
+// "flutter.sb_engine_<name>" user default (shared_preferences key
+// "sb_engine_<name>") to false. It is read when the layer is created.
+static BOOL SBFramePacingEnabled(NSString* name) {
+  id value = [[NSUserDefaults standardUserDefaults]
+      objectForKey:[@"flutter.sb_engine_" stringByAppendingString:name]];
+  return ![value respondsToSelector:@selector(boolValue)] || [value boolValue];
+}
+
 @interface FlutterMetalLayer () {
   id<MTLDevice> _preferredDevice;
   CGSize _drawableSize;
@@ -30,6 +39,14 @@ extern CFTimeInterval display_link_target;
   NSMutableSet<FlutterTexture*>* _availableTextures;
   NSUInteger _totalTextures;
   FlutterTexture* _front;
+
+  // Speakblend: nextTexture sleeps on this condition until a texture is
+  // returned, presented or finishes rendering, instead of spinning. A spinning
+  // raster thread holds a performance core and keeps the scheduler from moving
+  // the main thread onto one. _textureGeneration counts those changes.
+  NSCondition* _textureCondition;
+  NSUInteger _textureGeneration;
+  BOOL _waitForTextures;
 
   // There must be a CADisplayLink scheduled *on main thread* otherwise
   // core animation only updates layers 60 times a second.
@@ -50,6 +67,7 @@ extern CFTimeInterval display_link_target;
 - (void)onDisplayLink:(CADisplayLink*)link;
 - (void)presentTexture:(FlutterTexture*)texture;
 - (void)returnTexture:(FlutterTexture*)texture;
+- (void)signalTextureChange;
 
 @end
 
@@ -145,9 +163,11 @@ extern CFTimeInterval display_link_target;
 
 - (void)flutterPrepareForPresent:(nonnull id<MTLCommandBuffer>)commandBuffer {
   FlutterTexture* texture = _texture;
+  __weak FlutterMetalLayer* layer = _layer;
   texture.waitingForCompletion = YES;
   [commandBuffer addCompletedHandler:^(id<MTLCommandBuffer> buffer) {
     texture.waitingForCompletion = NO;
+    [layer signalTextureChange];
   }];
 }
 
@@ -181,6 +201,8 @@ extern CFTimeInterval display_link_target;
     self.device = self.preferredDevice;
     self.pixelFormat = MTLPixelFormatBGRA8Unorm;
     _availableTextures = [[NSMutableSet alloc] init];
+    _textureCondition = [[NSCondition alloc] init];
+    _waitForTextures = SBFramePacingEnabled(@"texture_wait");
 
     FlutterMetalLayerDisplayLinkProxy* proxy =
         [[FlutterMetalLayerDisplayLinkProxy alloc] initWithLayer:self];
@@ -246,6 +268,7 @@ extern CFTimeInterval display_link_target;
     _totalTextures = 0;
     _drawableSize = drawableSize;
   }
+  [self signalTextureChange];
 }
 
 - (void)didEnterBackground:(id)notification {
@@ -253,6 +276,7 @@ extern CFTimeInterval display_link_target;
     [_availableTextures removeAllObjects];
     _totalTextures = _front != nil ? 1 : 0;
   }
+  [self signalTextureChange];
   _displayLink.paused = YES;
 }
 
@@ -313,6 +337,7 @@ extern CFTimeInterval display_link_target;
 - (FlutterTexture*)nextTexture {
   CFTimeInterval start = CACurrentMediaTime();
   while (true) {
+    NSUInteger generation = [self textureGeneration];
     FlutterTexture* texture = [self tryNextTexture];
     if (texture != nil) {
       return texture;
@@ -322,7 +347,34 @@ extern CFTimeInterval display_link_target;
       NSLog(@"Waited %f seconds for a drawable, giving up.", elapsed);
       return nil;
     }
+    if (_waitForTextures) {
+      [self waitForTextureChangeAfter:generation];
+    }
   }
+}
+
+- (NSUInteger)textureGeneration {
+  [_textureCondition lock];
+  NSUInteger generation = _textureGeneration;
+  [_textureCondition unlock];
+  return generation;
+}
+
+// Sleeps until signalTextureChange runs after `generation` was read. The short
+// timeout only bounds the delay if a change is ever not signaled.
+- (void)waitForTextureChangeAfter:(NSUInteger)generation {
+  [_textureCondition lock];
+  if (_textureGeneration == generation) {
+    [_textureCondition waitUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
+  }
+  [_textureCondition unlock];
+}
+
+- (void)signalTextureChange {
+  [_textureCondition lock];
+  ++_textureGeneration;
+  [_textureCondition broadcast];
+  [_textureCondition unlock];
 }
 
 - (FlutterTexture*)tryNextTexture {
@@ -442,6 +494,7 @@ extern CFTimeInterval display_link_target;
       });
     }
   }
+  [self signalTextureChange];
 }
 
 - (void)returnTexture:(FlutterTexture*)texture {
@@ -454,6 +507,7 @@ extern CFTimeInterval display_link_target;
       [_availableTextures addObject:texture];
     }
   }
+  [self signalTextureChange];
 }
 
 + (BOOL)enabled {

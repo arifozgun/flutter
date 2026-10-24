@@ -62,6 +62,94 @@ typedef struct MouseState {
   CGPoint last_translation = CGPointZero;
 } MouseState;
 
+// Speakblend frame pacing patch. The app turns a change off by setting the
+// "flutter.sb_engine_<name>" user default (shared_preferences key
+// "sb_engine_<name>") to false. It is read when the view loads.
+static BOOL SBFramePacingEnabled(NSString* name) {
+  id value = [[NSUserDefaults standardUserDefaults]
+      objectForKey:[@"flutter.sb_engine_" stringByAppendingString:name]];
+  return ![value respondsToSelector:@selector(boolValue)] || [value boolValue];
+}
+
+// Room for a drag in any direction. The offset returns to the center whenever
+// scrolling stops.
+static constexpr CGFloat kSBFramePacingContentSize = 1000000.0;
+
+// Speakblend: a hidden scroll view whose pan recognizer watches drags on the
+// Flutter view. While it drags and decelerates, UIKit runs its updates in
+// managed commit mode and reports each update's deadline to the scheduler (the
+// CA client work interval), as it does for native scroll views. Flutter
+// content never scrolls a UIScrollView, so without this the scheduler only
+// sees utilization and can keep the frame threads on efficiency cores.
+@interface FlutterSBFramePacingScrollView : UIScrollView <UIScrollViewDelegate>
+@end
+
+@implementation FlutterSBFramePacingScrollView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+  self = [super initWithFrame:frame];
+  if (self) {
+    self.delegate = self;
+    self.scrollsToTop = NO;
+    self.showsVerticalScrollIndicator = NO;
+    self.showsHorizontalScrollIndicator = NO;
+    self.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    self.isAccessibilityElement = NO;
+    self.accessibilityElementsHidden = YES;
+    if (@available(iOS 26.0, *)) {
+      self.topEdgeEffect.hidden = YES;
+      self.leftEdgeEffect.hidden = YES;
+      self.bottomEdgeEffect.hidden = YES;
+      self.rightEdgeEffect.hidden = YES;
+    }
+    self.contentSize = CGSizeMake(kSBFramePacingContentSize, kSBFramePacingContentSize);
+    [self recenter];
+    UIPanGestureRecognizer* pan = self.panGestureRecognizer;
+    pan.cancelsTouchesInView = NO;
+    pan.delaysTouchesBegan = NO;
+    pan.delaysTouchesEnded = NO;
+  }
+  return self;
+}
+
+- (void)recenter {
+  self.contentOffset = CGPointMake(kSBFramePacingContentSize / 2, kSBFramePacingContentSize / 2);
+}
+
+// Never receives touches itself. Only its pan recognizer, attached to the
+// Flutter view, sees them.
+- (BOOL)pointInside:(CGPoint)point withEvent:(UIEvent*)event {
+  return NO;
+}
+
+// Recognizes together with every other recognizer, so it never blocks or
+// delays Flutter or platform view gestures.
+- (BOOL)gestureRecognizer:(UIGestureRecognizer*)gestureRecognizer
+    shouldRecognizeSimultaneouslyWithGestureRecognizer:
+        (UIGestureRecognizer*)otherGestureRecognizer {
+  return YES;
+}
+
+// Counts drags in the "flutter.sb_engine_drag_count" user default, so the app
+// can confirm that the hidden scroll view sees them.
+- (void)scrollViewWillBeginDragging:(UIScrollView*)scrollView {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  NSString* key = @"flutter.sb_engine_drag_count";
+  [defaults setInteger:[defaults integerForKey:key] + 1 forKey:key];
+}
+
+- (void)scrollViewDidEndDragging:(UIScrollView*)scrollView willDecelerate:(BOOL)decelerate {
+  if (!decelerate) {
+    [self recenter];
+  }
+}
+
+- (void)scrollViewDidEndDecelerating:(UIScrollView*)scrollView {
+  [self recenter];
+}
+
+@end
+
 // This is left a FlutterBinaryMessenger privately for now to give people a chance to notice the
 // change. Unfortunately unless you have Werror turned on, incompatible pointers as arguments are
 // just a warning.
@@ -547,6 +635,29 @@ static UIView* GetViewOrPlaceholder(UIView* existing_view) {
 
   [self.view addSubview:scrollView];
   self.scrollView = scrollView;
+
+  // Speakblend: lets UIKit report frame deadlines while the user drags or
+  // flings (see FlutterSBFramePacingScrollView).
+  if (SBFramePacingEnabled(@"managed_commits")) {
+    FlutterSBFramePacingScrollView* pacingScrollView =
+        [[FlutterSBFramePacingScrollView alloc] initWithFrame:CGRectMake(0, 0, 1, 1)];
+    [self.view addSubview:pacingScrollView];
+    [self.view addGestureRecognizer:pacingScrollView.panGestureRecognizer];
+  }
+  // Speakblend: tells the app which patch revision runs in this process and
+  // starts the drag count for this process at zero.
+  static dispatch_once_t sbPatchOnce;
+  dispatch_once(&sbPatchOnce, ^{
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    [defaults setObject:[NSString stringWithFormat:@"fp1:%d",
+                                                   [NSProcessInfo processInfo].processIdentifier]
+                 forKey:@"flutter.sb_engine_patch"];
+    [defaults setInteger:0 forKey:@"flutter.sb_engine_drag_count"];
+    NSLog(@"Speakblend frame pacing patch fp1: texture_wait=%d raster_rr=%d sync_frame=%d "
+          @"managed_commits=%d",
+          SBFramePacingEnabled(@"texture_wait"), SBFramePacingEnabled(@"raster_rr"),
+          SBFramePacingEnabled(@"sync_frame"), SBFramePacingEnabled(@"managed_commits"));
+  });
 }
 
 - (flutter::PointerData)generatePointerDataForFake {

@@ -2,8 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#define FML_USED_ON_EMBEDDER
+
 #import "flutter/shell/platform/darwin/ios/framework/Source/vsync_waiter_ios.h"
 
+#include "flutter/fml/message_loop.h"
 #import "flutter/shell/platform/darwin/common/framework/Headers/FlutterMacros.h"
 #import "flutter/shell/platform/darwin/ios/InternalFlutterSwift/InternalFlutterSwift.h"
 #import "flutter/shell/platform/darwin/ios/framework/Source/FlutterFMLTaskRunner+FML.h"
@@ -13,10 +16,25 @@ FLUTTER_ASSERT_ARC
 // When calculating refresh rate diffrence, anything within 0.1 fps is ignored.
 const static double kRefreshRateDiffToIgnore = 0.1;
 
+// Speakblend frame pacing patch. The app turns a change off by setting the
+// "flutter.sb_engine_<name>" user default (shared_preferences key
+// "sb_engine_<name>") to false. It is read when the vsync waiter is created.
+static BOOL SBFramePacingEnabled(NSString* name) {
+  id value = [[NSUserDefaults standardUserDefaults]
+      objectForKey:[@"flutter.sb_engine_" stringByAppendingString:name]];
+  return ![value respondsToSelector:@selector(boolValue)] || [value boolValue];
+}
+
 namespace flutter {
 
 VsyncWaiterIOS::VsyncWaiterIOS(const flutter::TaskRunners& task_runners)
     : VsyncWaiter(task_runners) {
+  // Speakblend: when the display link fires on the thread that runs UI tasks
+  // (the merged platform thread), run the frame task FireCallback posts right
+  // away. The frame is then built inside the UIKit update that dispatched the
+  // display link, which UIKit measures for the scheduler while it manages
+  // commits, instead of in a later run loop turn.
+  const BOOL syncFrame = SBFramePacingEnabled(@"sync_frame");
   auto vsyncCallback = ^(CFTimeInterval startTime, CFTimeInterval targetTime) {
     // Compute delay using the same CACurrentMediaTime() clock.
     CFTimeInterval delay = CACurrentMediaTime() - startTime;
@@ -34,6 +52,10 @@ VsyncWaiterIOS::VsyncWaiterIOS(const flutter::TaskRunners& task_runners)
     // Align target time to the C++ steady_clock used by fml::TimePoint.
     fml::TimePoint target_time = start_time + fml::TimeDelta::FromSecondsF(duration);
     FireCallback(start_time, target_time, true);
+    if (syncFrame && task_runners_.GetUITaskRunner()->RunsTasksOnCurrentThread() &&
+        fml::MessageLoop::IsInitializedForCurrentThread()) {
+      fml::MessageLoop::GetCurrent().RunExpiredTasksNow();
+    }
   };
   FlutterFMLTaskRunner* uiTaskRunner =
       [[FlutterFMLTaskRunner alloc] initWithTaskRunner:task_runners_.GetUITaskRunner()];
