@@ -18,6 +18,7 @@
 #include "flutter/common/constants.h"
 #include "flutter/common/graphics/persistent_cache.h"
 #include "flutter/fml/base32.h"
+#include "flutter/fml/build_config.h"
 #include "flutter/fml/file.h"
 #include "flutter/fml/icu_util.h"
 #include "flutter/fml/log_settings.h"
@@ -46,6 +47,10 @@
 #include "third_party/skia/include/codec/SkWebpDecoder.h"
 #include "third_party/skia/include/core/SkGraphics.h"
 #include "third_party/tonic/common/log.h"
+
+#if FML_OS_IOS
+#include <CoreFoundation/CoreFoundation.h>
+#endif  // FML_OS_IOS
 
 namespace flutter {
 
@@ -198,6 +203,24 @@ bool ValidateViewportMetrics(const ViewportMetrics& metrics) {
   }
 
   return true;
+}
+
+// Speakblend frame pacing patch. The app turns a change off by setting the
+// "flutter.sb_engine_<name>" user default (shared_preferences key
+// "sb_engine_<name>") to false. It is read once per process.
+bool IdleAfterSubmitEnabled() {
+#if FML_OS_IOS
+  static const bool enabled = [] {
+    Boolean valid = false;
+    Boolean value = CFPreferencesGetAppBooleanValue(
+        CFSTR("flutter.sb_engine_idle_after_submit"),
+        kCFPreferencesCurrentApplication, &valid);
+    return !valid || value;
+  }();
+  return enabled;
+#else
+  return false;
+#endif  // FML_OS_IOS
 }
 
 }  // namespace
@@ -1388,9 +1411,31 @@ void Shell::OnAnimatorNotifyIdle(fml::TimeDelta deadline) {
   FML_DCHECK(is_set_up_);
   FML_DCHECK(task_runners_.GetUITaskRunner()->RunsTasksOnCurrentThread());
 
-  if (engine_) {
-    engine_->NotifyIdle(deadline);
+  if (!engine_) {
+    return;
   }
+  // Speakblend: with merged platform and UI threads, the raster thread posts
+  // a frame's platform view submit to this thread when it finishes the frame.
+  // An idle notification that runs first can start a GC that holds the submit
+  // past the frame deadline. The notification goes through the raster task
+  // runner instead, behind the raster task already queued there, so it
+  // reaches this thread after that submit. The runtime skips it when less
+  // than 1ms is left before the deadline.
+  if (IdleAfterSubmitEnabled() &&
+      task_runners_.GetUITaskRunner() == task_runners_.GetPlatformTaskRunner()) {
+    task_runners_.GetRasterTaskRunner()->PostTask(
+        [ui_task_runner = task_runners_.GetUITaskRunner(),
+         engine = weak_engine_, deadline]() {
+          ui_task_runner->PostTask([engine, deadline]() {
+            if (engine) {
+              TRACE_EVENT0("flutter", "Shell::NotifyIdleAfterSubmit");
+              engine->NotifyIdle(deadline);
+            }
+          });
+        });
+    return;
+  }
+  engine_->NotifyIdle(deadline);
 }
 
 void Shell::OnAnimatorUpdateLatestFrameTargetTime(
