@@ -55,7 +55,14 @@ jobs:
             echo "iOS $IOS is already installed"
             exit 0
           fi
-          xcodebuild -downloadPlatform iOS -buildVersion "$IOS"
+          # Apple's download server sometimes drops the connection.
+          for attempt in 1 2 3; do
+            xcodebuild -downloadPlatform iOS -buildVersion "$IOS" && break
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            sleep 30
+          done
           xcrun simctl list runtimes
           df -h /
 
@@ -123,8 +130,10 @@ jobs:
           out=$GITHUB_WORKSPACE/out
           mkdir -p "$out"
           cd "$RUNNER_TEMP/loupe_probe"
+          # On GitHub Actions the default reporter names a test only after it
+          # ends; the expanded one names it when it starts.
           "$GITHUB_WORKSPACE/flutter/bin/flutter" test integration_test/loupe_test.dart \
-            -d "$UDID" > "$out/test.log" 2>&1 &
+            --reporter expanded -d "$UDID" > "$out/test.log" 2>&1 &
           tester=$!
           # Start recording when the test starts on the simulator, after the build.
           while kill -0 "$tester" 2> /dev/null; do
