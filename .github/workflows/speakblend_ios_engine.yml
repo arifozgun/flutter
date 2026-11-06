@@ -1,10 +1,8 @@
-# Builds the arm64 iOS simulator engine (debug, unoptimized) for the system
-# text magnifier branch, runs the iOS embedding XCTests the way the
-# ci/ios_debug_unopt_sim_arm64 builder of flutter/flutter does, and uploads
-# the simulator Flutter.framework for local simulator tests.
-#
-# Compiles go through ccache, kept in the Actions cache. GitHub deletes a
-# cache that is not used for 7 days, so a later run may start cold again.
+# Records the system text magnifier on iOS 17 and 18 simulators, which Xcode 27
+# can no longer download. Each job installs the simulator Flutter.framework
+# built by an earlier run of the engine workflow, runs the probe app's
+# integration test in dev/speakblend_loupe_probe, and uploads a screen
+# recording of the simulator together with the test output.
 name: Speakblend iOS simulator engine
 
 on:
@@ -12,163 +10,129 @@ on:
 
 permissions:
   contents: read
+  actions: read
+
+env:
+  # The run that built and uploaded flutter-ios_debug_sim_unopt_arm64.
+  ENGINE_RUN_ID: '42131081162'
+  # The framework's engine artifacts; on master the version otherwise comes
+  # from a hash of the engine sources.
+  FLUTTER_PREBUILT_ENGINE_VERSION: bffa2f388151413c6bc31e369386f0c6eb0b8e66
 
 jobs:
-  build:
-    name: ios_debug_sim_unopt_arm64
-    runs-on: macos-15
-    timeout-minutes: 360
+  record:
+    name: ${{ matrix.runtime }} ${{ matrix.pick }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            runtime: iOS-18
+            pick: newest
+          - os: macos-14
+            runtime: iOS-17
+            pick: newest
+          - os: macos-14
+            runtime: iOS-17
+            pick: oldest
     env:
-      DEPOT_TOOLS_UPDATE: '0'
-      DEPOT_TOOLS_METRICS: '0'
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_BASEDIR: ${{ github.workspace }}
-      # The compiler comes from DEPS, whose hash is part of the cache key.
-      CCACHE_COMPILERCHECK: none
-      # A fresh checkout gives every header a new mtime.
-      CCACHE_SLOPPINESS: include_file_ctime,include_file_mtime,time_macros
-      CCACHE_MAXSIZE: 4G
-      VARIANT: ios_debug_sim_unopt_arm64
+      RUNTIME: ${{ matrix.runtime }}
+      PICK: ${{ matrix.pick }}
     steps:
-      - name: Select Xcode 26
-        run: |
-          ls -d /Applications/Xcode*.app
-          xcode=$(ls -d /Applications/Xcode_26.2*.app 2>/dev/null | sort -V | tail -1)
-          if [ -z "$xcode" ]; then
-            xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
-          fi
-          # Some names are symlinks; the cleanup below must keep the real app.
-          xcode=$(realpath "$xcode")
-          echo "Using $xcode"
-          sudo xcode-select -s "$xcode"
-          xcodebuild -version
-          echo "SELECTED_XCODE=$xcode" >> "$GITHUB_ENV"
-
-      - name: Free disk space
-        run: |
-          df -h /
-          for app in /Applications/Xcode*.app; do
-            if [ ! -L "$app" ] && [ "$(realpath "$app")" != "$SELECTED_XCODE" ]; then
-              sudo rm -rf "$app"
-            fi
-          done
-          sudo rm -rf "$HOME/Library/Android" /usr/local/lib/android || true
-          for tool in CodeQL go Ruby PyPy node; do
-            sudo rm -rf "$AGENT_TOOLSDIRECTORY/$tool" || true
-          done
-          df -h /
-
       - uses: actions/checkout@v4
         with:
           path: flutter
-          fetch-depth: 1
 
-      - name: Install depot_tools and ccache
+      - name: Show Xcode and simulator runtimes
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Install the simulator engine
         env:
-          HOMEBREW_NO_AUTO_UPDATE: '1'
-          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
-          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
-          brew install ccache
-          ccache --version | head -1
+          flutter/bin/flutter precache --ios
+          # A rerun of the engine run uploads the artifact again under the same
+          # name; take the newest.
+          artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ENGINE_RUN_ID/artifacts" \
+            --jq '[.artifacts[] | select(.name == "flutter-ios_debug_sim_unopt_arm64")]
+                  | sort_by(.created_at) | last | .id')
+          mkdir engine
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > engine/artifact.zip
+          unzip -q engine/artifact.zip -d engine
+          cat engine/manifest-ios_debug_sim_unopt_arm64.txt
+          unzip -q engine/Flutter.framework-ios_debug_sim_unopt_arm64.zip -d engine/unzipped
+          framework=flutter/bin/cache/artifacts/engine/ios/Flutter.xcframework/ios-arm64_x86_64-simulator/Flutter.framework
+          lipo "$framework/Flutter" -replace arm64 engine/unzipped/Flutter.framework/Flutter \
+            -output engine/Flutter.fat
+          cp engine/Flutter.fat "$framework/Flutter"
+          codesign --force --sign - "$framework/Flutter"
+          lipo -info "$framework/Flutter"
+          LC_ALL=C grep -a -q Magnifier.showSystemMagnifier "$framework/Flutter"
 
-      - name: Restore ccache
-        uses: actions/cache/restore@v4
-        with:
-          path: .ccache
-          key: ccache-${{ env.VARIANT }}-${{ hashFiles('flutter/DEPS') }}-${{ github.run_id }}
-          restore-keys: ccache-${{ env.VARIANT }}-${{ hashFiles('flutter/DEPS') }}-
-
-      - name: gclient sync
-        working-directory: flutter
+      - name: Create the probe app
         run: |
-          cat > .gclient <<'EOF'
-          solutions = [
-            {
-              "custom_deps": {},
-              "deps_file": "DEPS",
-              "managed": False,
-              "name": ".",
-              "safesync_url": "",
-              "url": "https://github.com/flutter/flutter.git",
-              "custom_vars": {
-                "download_android_deps": False,
-                "download_jdk": False,
-                "download_esbuild": False,
-                "setup_githooks": False,
-              },
-            },
-          ]
-          EOF
-          gclient sync -D --no-history --jobs 8
-          df -h /
+          # Outside the repository, so that it is not part of its pub workspace.
+          cp -R flutter/dev/speakblend_loupe_probe "$RUNNER_TEMP/loupe_probe"
+          cd "$RUNNER_TEMP/loupe_probe"
+          "$GITHUB_WORKSPACE/flutter/bin/flutter" create --platforms=ios \
+            --project-name loupe_probe --org com.speakblend .
+          "$GITHUB_WORKSPACE/flutter/bin/flutter" pub get
 
-      - name: gn
-        working-directory: flutter/engine/src
+      - name: Create and boot the simulator
         run: |
-          ./flutter/tools/gn --ios --runtime-mode debug --simulator --unoptimized \
-            --no-lto --simulator-cpu arm64 --no-rbe --no-goma --ccache \
-            --target-dir "$VARIANT"
+          read -r runtime version device < <(xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          prefix = "com.apple.CoreSimulator.SimRuntime." + os.environ["RUNTIME"] + "-"
+          runtimes = [r for r in json.load(sys.stdin)["runtimes"]
+                      if r["identifier"].startswith(prefix) and r.get("isAvailable")]
+          runtimes.sort(key=lambda r: tuple(int(x) for x in r["version"].split(".")))
+          runtime = runtimes[0] if os.environ["PICK"] == "oldest" else runtimes[-1]
+          iphones = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
+                     if d.get("productFamily") == "iPhone"]
+          preferred = "com.apple.CoreSimulator.SimDeviceType.iPhone-15"
+          device = preferred if preferred in iphones else iphones[-1]
+          print(runtime["identifier"], runtime["version"], device)
+          ')
+          echo "Runtime $runtime ($version) on $device"
+          udid=$(xcrun simctl create loupe "$device" "$runtime")
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          # The first keyboard on a new simulator shows a slide-to-type introduction.
+          xcrun simctl spawn "$udid" defaults write com.apple.keyboard.preferences \
+            DidShowContinuousPathIntroduction -bool true
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          echo "IOS_VERSION=$version" >> "$GITHUB_ENV"
 
-      - name: ninja
-        working-directory: flutter/engine/src
+      - name: Record the integration test
         run: |
-          # DEPS puts ninja under the gclient root, not under engine/src.
-          ninja="$GITHUB_WORKSPACE/flutter/third_party/ninja/ninja"
-          if [ ! -x "$ninja" ]; then
-            ninja=$(find "$GITHUB_WORKSPACE/flutter" -path '*third_party/ninja/ninja' -type f | head -1)
-          fi
-          ccache --zero-stats
-          "$ninja" -j 4 -C "out/$VARIANT" \
-            flutter/shell/platform/darwin/ios:flutter_framework \
-            flutter/shell/platform/darwin/ios:ios_test_flutter
-          ccache --show-stats
-          df -h /
-
-      - name: Save ccache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: .ccache
-          key: ccache-${{ env.VARIANT }}-${{ hashFiles('flutter/DEPS') }}-${{ github.run_id }}
-
-      - name: Package simulator framework
-        run: |
-          set -euo pipefail
-          out="flutter/engine/src/out/$VARIANT"
-          dist="$GITHUB_WORKSPACE/dist"
-          mkdir -p "$dist"
-          lipo -info "$out/Flutter.framework/Flutter"
-          (cd "$out" && ditto -c -k --keepParent Flutter.framework "$dist/Flutter.framework-$VARIANT.zip")
-          {
-            echo "variant: $VARIANT"
-            echo "commit: ${GITHUB_SHA}"
-            echo "xcode: $(xcodebuild -version | tr '\n' ' ')"
-            echo "binary_sha256: $(shasum -a 256 "$out/Flutter.framework/Flutter" | cut -d' ' -f1)"
-          } > "$dist/manifest-$VARIANT.txt"
-          cat "$dist/manifest-$VARIANT.txt"
+          out=$GITHUB_WORKSPACE/out
+          mkdir -p "$out"
+          cd "$RUNNER_TEMP/loupe_probe"
+          "$GITHUB_WORKSPACE/flutter/bin/flutter" test integration_test/loupe_test.dart \
+            -d "$UDID" > "$out/test.log" 2>&1 &
+          tester=$!
+          # Start recording when the test starts on the simulator, after the build.
+          while kill -0 "$tester" 2> /dev/null; do
+            grep -q "long-press drags over every field" "$out/test.log" && break
+            sleep 0.2
+          done
+          xcrun simctl io "$UDID" recordVideo --codec=h264 --force \
+            "$out/loupe-ios-$IOS_VERSION.mp4" > "$out/record.log" 2>&1 &
+          recorder=$!
+          status=0
+          wait "$tester" || status=$?
+          sleep 2
+          kill -INT "$recorder"
+          wait "$recorder" || true
+          cat "$out/test.log"
+          exit "$status"
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: flutter-${{ env.VARIANT }}
-          path: dist/*
-          if-no-files-found: error
-
-      - name: iOS embedding unit tests
-        working-directory: flutter/engine/src
-        env:
-          FLUTTER_TEST_OUTPUTS_DIR: ${{ runner.temp }}/test-outputs
-        run: |
-          mkdir -p "$FLUTTER_TEST_OUTPUTS_DIR"
-          xcrun simctl list runtimes
-          python3 flutter/testing/run_tests.py --variant "$VARIANT" --type objc \
-            --ios-variant "$VARIANT"
-
-      - name: Upload test results
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ios-embedding-test-outputs
-          path: ${{ runner.temp }}/test-outputs
-          if-no-files-found: ignore
+          name: loupe-${{ matrix.runtime }}-${{ matrix.pick }}
+          path: out
