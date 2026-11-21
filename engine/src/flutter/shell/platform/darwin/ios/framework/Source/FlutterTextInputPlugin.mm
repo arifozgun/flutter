@@ -842,6 +842,26 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
   return NO;
 }
 
+// EDITMENU_DIAG: temporary diagnostics, not part of the change.
+static NSString* EditMenuDiagDescribe(id object) {
+  if (!object) {
+    return @"nil";
+  }
+  return [NSString
+      stringWithFormat:@"%@<%p>", NSStringFromClass([object class]), (__bridge void*)object];
+}
+
+static void EditMenuDiagLog(UIView* view, NSString* format, ...) NS_FORMAT_FUNCTION(2, 3);
+
+static void EditMenuDiagLog(UIView* view, NSString* format, ...) {
+  va_list arguments;
+  va_start(arguments, format);
+  NSString* message = [[NSString alloc] initWithFormat:format arguments:arguments];
+  va_end(arguments);
+  NSLog(@"EDITMENU_DIAG t=%.3f view=%p fr=%d %@", NSProcessInfo.processInfo.systemUptime,
+        (__bridge void*)view, view.isFirstResponder, message);
+}
+
 @implementation FlutterTextInputView {
   int _textInputClient;
   const char* _selectionAffinity;
@@ -1275,7 +1295,10 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
 - (void)willMoveToWindow:(UIWindow*)newWindow {
   // A view removed while its edit menu is shown may never get the dismissal's completion.
   if (!newWindow) {
+    BOOL diagAttached = _editMenuTextInteraction.view == self;
     [self removeEditMenuTextInteraction];
+    EditMenuDiagLog(self, @"remove reason=leavingWindow attached=%d->%d", diagAttached,
+                    _editMenuTextInteraction.view == self);
   }
   [super willMoveToWindow:newWindow];
 }
@@ -1287,15 +1310,35 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
   // A row's action can arrive after this callback (Look Up does), and UIKit validates the row
   // through the text interaction when it does, so the interaction stays until the menu is gone.
   id<NSCopying> presentation = configuration.identifier;
+  EditMenuDiagLog(self, @"willDismiss id=%@ count=%lu attached=%d", presentation,
+                  (unsigned long)_editMenuPresentationCount, _editMenuTextInteraction.view == self);
   __weak FlutterTextInputView* weakSelf = self;
   [animator addCompletion:^{
     FlutterTextInputView* strongSelf = weakSelf;
+    BOOL diagAttached = strongSelf && strongSelf->_editMenuTextInteraction.view == strongSelf;
     if (strongSelf && [@(strongSelf->_editMenuPresentationCount) isEqual:presentation]) {
       [strongSelf removeEditMenuTextInteraction];
+    }
+    if (strongSelf) {
+      EditMenuDiagLog(strongSelf,
+                      @"remove reason=dismissCompletion id=%@ count=%lu matches=%d attached=%d->%d "
+                      @"inputDelegate=%@",
+                      presentation, (unsigned long)strongSelf->_editMenuPresentationCount,
+                      [@(strongSelf->_editMenuPresentationCount) isEqual:presentation],
+                      diagAttached, strongSelf->_editMenuTextInteraction.view == strongSelf,
+                      EditMenuDiagDescribe(strongSelf.inputDelegate));
     }
   }];
   [self.textInputDelegate flutterTextInputView:self
         willDismissEditMenuWithTextInputClient:_textInputClient];
+}
+
+- (void)editMenuInteraction:(UIEditMenuInteraction*)interaction
+    willPresentMenuForConfiguration:(UIEditMenuConfiguration*)configuration
+                           animator:(id<UIEditMenuInteractionAnimating>)animator
+    API_AVAILABLE(ios(16.0)) {
+  EditMenuDiagLog(self, @"willPresent id=%@ count=%lu attached=%d", configuration.identifier,
+                  (unsigned long)_editMenuPresentationCount, _editMenuTextInteraction.view == self);
 }
 
 - (CGRect)editMenuInteraction:(UIEditMenuInteraction*)interaction
@@ -1308,6 +1351,8 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
   _editMenuTargetRect = targetRect;
   _editMenuItems = items;
   _editMenuPresentationCount++;
+  BOOL diagAttachedBefore = _editMenuTextInteraction.view == self;
+  NSString* diagDelegateBefore = EditMenuDiagDescribe(self.inputDelegate);
 
   if ([self usesSystemEditMenuGroups] && EditMenuItemsUseSystemTextRows(items)) {
     // Attached before the menu is built, since UIKit leaves out its lookup and share rows
@@ -1323,8 +1368,16 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
       _isChangingEditMenuTextInteraction = NO;
     }
   } else {
+    BOOL diagAttached = _editMenuTextInteraction.view == self;
     [self removeEditMenuTextInteraction];
+    EditMenuDiagLog(self, @"remove reason=newMenuWithoutSystemRows attached=%d->%d", diagAttached,
+                    _editMenuTextInteraction.view == self);
   }
+  EditMenuDiagLog(self, @"showEditMenu count=%lu items=%@ attached=%d->%d inputDelegate=%@->%@",
+                  (unsigned long)_editMenuPresentationCount,
+                  [[items valueForKey:@"type"] componentsJoinedByString:@","], diagAttachedBefore,
+                  _editMenuTextInteraction.view == self, diagDelegateBefore,
+                  EditMenuDiagDescribe(self.inputDelegate));
 
   UIEditMenuConfiguration* config =
       [UIEditMenuConfiguration configurationWithIdentifier:@(_editMenuPresentationCount)
@@ -1333,6 +1386,8 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
 }
 
 - (void)hideEditMenu API_AVAILABLE(ios(16.0)) {
+  EditMenuDiagLog(self, @"hideEditMenu count=%lu attached=%d",
+                  (unsigned long)_editMenuPresentationCount, _editMenuTextInteraction.view == self);
   [self.editMenuInteraction dismissMenu];
 }
 
@@ -1456,6 +1511,10 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
 // menu as it does without one, for example it does not apply a pending autocorrection when the
 // selection moves. Other interactions, such as the one setTextInputState: adds, still set it.
 - (void)setInputDelegate:(id<UITextInputDelegate>)inputDelegate {
+  EditMenuDiagLog(self, @"setInputDelegate %@ old=%@ new=%@ guard=%d menuInteractionAttached=%d",
+                  _isChangingEditMenuTextInteraction ? @"ignored" : @"accepted",
+                  EditMenuDiagDescribe(_inputDelegate), EditMenuDiagDescribe(inputDelegate),
+                  _isChangingEditMenuTextInteraction, _editMenuTextInteraction.view == self);
   if (_isChangingEditMenuTextInteraction) {
     return;
   }
@@ -1476,6 +1535,10 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
   // and selection changes when that happens, add a dummy UITextInteraction to this
   // view so it sets a valid inputDelegate that we can call textWillChange et al. on.
   // See https://github.com/flutter/engine/pull/32881.
+  EditMenuDiagLog(
+      self, @"setTextInputState inputDelegate=%@ workaround=%d menuInteractionAttached=%d",
+      EditMenuDiagDescribe(self.inputDelegate), !self.inputDelegate && self.isFirstResponder,
+      _editMenuTextInteraction.view == self);
   if (!self.inputDelegate && self.isFirstResponder) {
     [self addInteraction:self.textInteraction];
   }
@@ -1642,6 +1705,9 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
         didRestoreFirstResponderWithTextInputClient:client
                                              result:handleResult];
   }
+  EditMenuDiagLog(self, @"becomeFirstResponder success=%d was=%d inputDelegate=%@ attached=%d",
+                  success, wasFirstResponder, EditMenuDiagDescribe(self.inputDelegate),
+                  _editMenuTextInteraction.view == self);
   return success;
 }
 
@@ -1660,8 +1726,15 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
 - (BOOL)resignFirstResponder {
   BOOL wasFirstResponder = self.isFirstResponder;
   BOOL success = [super resignFirstResponder];
+  EditMenuDiagLog(self, @"resignFirstResponder success=%d was=%d inputDelegate=%@ attached=%d",
+                  success, wasFirstResponder, EditMenuDiagDescribe(self.inputDelegate),
+                  _editMenuTextInteraction.view == self);
   if (success) {
+    BOOL diagAttached = _editMenuTextInteraction.view == self;
     [self removeEditMenuTextInteraction];
+    EditMenuDiagLog(self, @"remove reason=resign attached=%d->%d inputDelegate=%@", diagAttached,
+                    _editMenuTextInteraction.view == self,
+                    EditMenuDiagDescribe(self.inputDelegate));
   }
   if (success && !_preventCursorDismissWhenResignFirstResponder) {
     if (wasFirstResponder) {
@@ -3110,6 +3183,8 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
 }
 
 - (BOOL)showEditMenu:(NSDictionary*)args API_AVAILABLE(ios(16.0)) {
+  EditMenuDiagLog(self.activeView, @"plugin showEditMenu accepted=%d",
+                  self.activeView.isFirstResponder);
   if (!self.activeView.isFirstResponder) {
     return NO;
   }
@@ -3123,6 +3198,7 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
 }
 
 - (void)hideEditMenu {
+  EditMenuDiagLog(self.activeView, @"plugin hideEditMenu");
   [self.activeView hideEditMenu];
 }
 
