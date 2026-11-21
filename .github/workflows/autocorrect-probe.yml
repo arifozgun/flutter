@@ -1,0 +1,256 @@
+# Runs only the autocorrect harness of the UIKit probe
+# (MenuProbeUITests/AutocorrectProbeUITests) on iOS 26, 18.6 and 17.5
+# simulators: when does the keyboard commit a pending autocorrection on a
+# selection change, natively, in a custom UITextInput view, and after a
+# UITextInteraction was attached and removed around an edit menu? Uploads the
+# summary, the app's records, screenshots, the app log and the xcresult, also
+# when a test fails. See README.md ("Autocorrect harness").
+name: Autocorrect probe
+
+on:
+  # The push run does nothing (the job is skipped). It only makes this workflow
+  # known to GitHub, so that it can be dispatched from a branch that is not the
+  # default branch.
+  push:
+    branches: [speakblend/menu-probe]
+    paths: ['.github/workflows/autocorrect-probe.yml']
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: 'Test methods to run, separated by spaces (for example "test_01_t01 test_13_f02"); empty = all'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: iOS ${{ matrix.ios }}
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Xcode 26 on the image; its newest iOS 26 runtime (26.2 so far).
+          - ios: '26'
+            xcode: '26'
+          # Xcode 16; 18.6 comes with the image, 17.5 is downloaded.
+          - ios: '18.6'
+            xcode: '16'
+          - ios: '17.5'
+            xcode: '16'
+    env:
+      WANT_XCODE: ${{ matrix.xcode }}
+      WANT_IOS: ${{ matrix.ios }}
+      OUT: ${{ github.workspace }}/out
+      TESTS: ${{ inputs.tests }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the inputs
+        run: |
+          mkdir -p "$OUT"
+          case "$TESTS" in
+            *[!A-Za-z0-9_\ ]*) echo "tests may hold only letters, digits, _ and spaces"; exit 1 ;;
+          esac
+          {
+            echo "want xcode=$WANT_XCODE ios=$WANT_IOS tests=${TESTS:-all}"
+            sw_vers
+            df -h /
+          } 2>&1 | tee "$OUT/runner.txt"
+
+      - name: Select Xcode
+        run: |
+          # The newest installed release of the wanted major version.
+          xcode=$(python3 - <<'PY'
+          import glob, os, re
+          want = int(os.environ["WANT_XCODE"])
+          found = {}
+          for path in glob.glob("/Applications/Xcode_*.app"):
+              m = re.match(r"Xcode_(\d+(?:\.\d+)*)(.*)\.app$", os.path.basename(path))
+              if not m:
+                  continue
+              version = tuple(int(x) for x in m.group(1).split("."))
+              if version[0] != want:
+                  continue
+              beta = "beta" in m.group(2).lower() or "rc" in m.group(2).lower()
+              real = os.path.realpath(path)
+              key = (0 if beta else 1, version)
+              if real not in found or key > found[real][0]:
+                  found[real] = (key, path)
+          if found:
+              print(max(found.values())[1])
+          PY
+          )
+          if [ -z "$xcode" ]; then
+            echo "No Xcode $WANT_XCODE on this image"
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode"
+          {
+            echo "selected $xcode"
+            xcodebuild -version
+            xcrun simctl list runtimes
+          } 2>&1 | tee -a "$OUT/runner.txt"
+
+      - name: Download the iOS runtime
+        run: |
+          if xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          wanted = os.environ["WANT_IOS"]
+          sys.exit(0 if any(
+              r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+              and r.get("isAvailable")
+              and (r["version"] == wanted or r["version"].startswith(wanted + "."))
+              for r in json.load(sys.stdin)["runtimes"]) else 1)
+          '; then
+            echo "iOS $WANT_IOS is already installed"
+            exit 0
+          fi
+          build_version=()
+          case "$WANT_IOS" in
+            *.*) build_version=(-buildVersion "$WANT_IOS") ;;
+          esac
+          # Apple's download server sometimes drops the connection.
+          for attempt in 1 2 3; do
+            xcodebuild -downloadPlatform iOS "${build_version[@]}" && break
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            sleep 30
+          done
+          xcrun simctl list runtimes
+
+      - name: Create and boot the simulator
+        run: |
+          read -r runtime version device < <(xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          want = os.environ["WANT_IOS"]
+          runtimes = [r for r in json.load(sys.stdin)["runtimes"]
+                      if r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+                      and r.get("isAvailable")
+                      and (r["version"] == want or r["version"].startswith(want + "."))]
+          if not runtimes:
+              sys.exit(0)
+          runtimes.sort(key=lambda r: tuple(int(x) for x in r["version"].split(".")))
+          runtime = runtimes[-1]
+          iphones = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
+                     if d.get("productFamily") == "iPhone"]
+          prefix = "com.apple.CoreSimulator.SimDeviceType."
+          device = next((prefix + name for name in ["iPhone-17-Pro", "iPhone-17", "iPhone-16-Pro", "iPhone-16",
+                                                    "iPhone-15-Pro", "iPhone-15"]
+                         if prefix + name in iphones), iphones[-1] if iphones else "")
+          print(runtime["identifier"], runtime["version"], device)
+          ') || true
+          if [ -z "${runtime:-}" ] || [ -z "${device:-}" ]; then
+            echo "No usable iOS $WANT_IOS runtime or iPhone device type"
+            exit 1
+          fi
+          echo "Runtime $runtime ($version) on $device" | tee -a "$OUT/runner.txt"
+          udid=$(xcrun simctl create autocorrect-probe "$device" "$runtime")
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          # The first keyboard on a new simulator shows a slide-to-type introduction.
+          xcrun simctl spawn "$udid" defaults write com.apple.keyboard.preferences \
+            DidShowContinuousPathIntroduction -bool true
+          xcrun simctl status_bar "$udid" override --time 9:41 || true
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          echo "IOS_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Run the autocorrect tests
+        run: |
+          only=(-only-testing:MenuProbeUITests/AutocorrectProbeUITests)
+          if [ -n "$TESTS" ]; then
+            only=()
+            for name in $TESTS; do
+              only+=("-only-testing:MenuProbeUITests/AutocorrectProbeUITests/$name")
+            done
+          fi
+          xcrun simctl io "$UDID" recordVideo --codec=h264 --force "$OUT/recording.mp4" \
+            > "$OUT/record.log" 2>&1 &
+          recorder=$!
+          status=0
+          # TEST_RUNNER_ variables reach the UI test runner without the prefix;
+          # the test passes PROBE_OUT on to the app.
+          TEST_RUNNER_PROBE_OUT="$OUT" xcodebuild test \
+            -project MenuProbe.xcodeproj \
+            -scheme MenuProbe \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -resultBundlePath "$OUT/Autocorrect.xcresult" \
+            "${only[@]}" \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 300 \
+            CODE_SIGN_IDENTITY=- \
+            > "$OUT/xcodebuild.log" 2>&1 || status=$?
+          kill -INT "$recorder" || true
+          wait "$recorder" || true
+          grep -E "Test Case|error:|failed|passed|\*\*" "$OUT/xcodebuild.log" | tail -120 || true
+          echo "xcodebuild exit status $status"
+          exit "$status"
+
+      - name: Collect app log and app files
+        if: always()
+        run: |
+          if [ -n "${UDID:-}" ]; then
+            xcrun simctl spawn "$UDID" log show --style syslog --info --debug --last 3h \
+              --predicate 'subsystem == "dev.probe.editmenu"' > "$OUT/app-log.txt" 2>&1 || true
+            container=$(xcrun simctl get_app_container "$UDID" dev.probe.editmenu data 2>/dev/null || true)
+            if [ -n "$container" ] && [ -d "$container/Documents" ]; then
+              cp -R "$container/Documents" "$OUT/app-documents"
+            fi
+          fi
+          if [ -d "$OUT/Autocorrect.xcresult" ]; then
+            xcrun xcresulttool export attachments --path "$OUT/Autocorrect.xcresult" \
+              --output-path "$OUT/attachments" > "$OUT/attachments-export.log" 2>&1 || true
+            xcrun xcresulttool get test-results summary --path "$OUT/Autocorrect.xcresult" \
+              > "$OUT/test-summary.json" 2>&1 || true
+          fi
+          ls -R "$OUT" > "$OUT/files.txt" 2>&1 || true
+
+      - name: Write the job summary
+        if: always()
+        run: |
+          {
+            echo "## Autocorrect probe, iOS ${IOS_VERSION:-$WANT_IOS}, Xcode $WANT_XCODE"
+            echo '```'
+            grep -E "^selected|^Xcode [0-9]|^Runtime" "$OUT/runner.txt" || true
+            echo '```'
+            echo "### committed per variant"
+            echo '```'
+            python3 - "$OUT/summary.txt" <<'PY' || true
+          import sys
+          try:
+              lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+          except OSError:
+              print("(no summary.txt)")
+              sys.exit(0)
+          for line in lines:
+              fields = [f.strip() for f in line.split(" | ")]
+              values = {}
+              for field in fields[1:]:
+                  key, sep, value = field.partition("=")
+                  if sep and key not in values:
+                      values[key] = value
+              print(f'{fields[0]:<38} committed={values.get("committed", "?"):<8} '
+                    f'literalOffered={values.get("literalOffered", "?"):<8} '
+                    f'typed={values.get("textAfterTyping", "?")} late={values.get("textLate", "?")}')
+          PY
+            echo '```'
+            echo "### summary.txt"
+            echo '```'
+            head -c 300000 "$OUT/summary.txt" 2>/dev/null || echo "(no summary.txt)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: autocorrect-probe-ios${{ matrix.ios }}
+          path: out
+          if-no-files-found: warn

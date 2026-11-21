@@ -93,6 +93,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         options connectionOptions: UIScene.ConnectionOptions
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
+        // `-acVariant <id>`: the autocorrect harness instead of a menu variant.
+        if let id = UserDefaults.standard.string(forKey: "acVariant"), let acVariant = ACVariant.named(id) {
+            Probe.tag = "ac-\(acVariant.id)"
+            Probe.event("launch \(Probe.tag) iOS \(UIDevice.current.systemVersion)")
+            let window = UIWindow(windowScene: windowScene)
+            window.rootViewController = AutocorrectViewController(variant: acVariant)
+            window.makeKeyAndVisible()
+            self.window = window
+            return
+        }
         let variant = Variant.fromLaunchArguments()
         Probe.runName = UserDefaults.standard.string(forKey: "probeRun") ?? ""
         Probe.tag = Probe.runName.isEmpty ? variant.tag : "\(variant.tag)-\(Probe.runName)"

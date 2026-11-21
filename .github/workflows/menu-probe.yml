@@ -162,6 +162,7 @@ jobs:
             -destination "id=$UDID" \
             -derivedDataPath "$RUNNER_TEMP/dd" \
             -resultBundlePath "$OUT/MenuProbe.xcresult" \
+            -skip-testing:MenuProbeUITests/AutocorrectProbeUITests \
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 300 \

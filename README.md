@@ -365,3 +365,136 @@ times, `at <time>` and the coordinates in `frame=` are ignored; `after 2 s` and
 `after tap` count as the same field. Scenarios only one run has are listed;
 `--all` also lists the ones without a difference. It reads files and prints,
 nothing else (Python 3, standard library only).
+
+# Autocorrect harness
+
+A third harness, in the UIKit probe app, for one question: when does the
+keyboard commit a pending autocorrection on a selection change, and does a
+`UITextInteraction` that was attached to a custom `UITextInput` view and
+removed again change that? In the Flutter app, with the engine change that
+attaches an interaction for the edit menu (keeping the keyboard's
+`inputDelegate`), "…sailed awayabc" became "…sailed away ax" when the
+selection moved after typing; the stock engine kept "awayabc".
+
+## What it runs
+
+The app takes `-acVariant <id>` and shows `AutocorrectViewController`. The
+text is "The quiet harbor sailed away", the caret at the end. The input view
+is `ACInputView` (`MenuProbe/AutocorrectInputView.swift`), a separate class
+from `ProbeTextInputView`, set up like `FlutterTextInputView`: keyboard edits
+do not call `inputDelegate`; `engineSetState` is `setTextInputState:`
+(will-change, assign, did-change, with the engine's transient interaction when
+`inputDelegate` is nil); traits as in the engine (autocorrection and spell
+checking default, inline predictions off); positions move in every direction
+so `UITextInputStringTokenizer` finds words. The default layout is the
+engine's: a zero-sized input view in a zero-sized hider, the text drawn by
+another view.
+
+Each variant is a timed script. The default (sequence T) is: select "harbor"
+(10..16); 0.4 s later attach the interaction (the view ignores the
+`inputDelegate` assignments UIKit makes while it is added or removed) and
+present the menu; 2 s later move the selection to the end (28..28) and dismiss
+the menu; remove the interaction when the dismiss animation completes; 2 s
+later ask the test to type `abc` with key taps; 3.5 s after the last key move
+the selection to 3..3 the engine's way; read the text then, 0.3 s and 2 s
+later. Programmatic steps come from timers (no touch); real taps only where a
+variant says so.
+
+| id | What it does | Question |
+|----|--------------|----------|
+| n01 / n02 | UITextView: type, then a real tap near the start / `selectedRange = {3,0}` | Q1 |
+| n03 / n04 | UITextField: type, then a real tap / `selectedTextRange =` | Q1 |
+| s01 | Engine layout, no interaction, no menu, engine-style change | Q2 |
+| s02 | s01, the change follows a real tap on the drawn text | Q2 |
+| s03 | s01, selection assigned without will/did-change | Q2, Q4 |
+| s04 / s05 | s01 with a 1x1 view / with inline predictions on | Q2, Q4 |
+| t01, t99 | Sequence T (t99 repeats it at the end of the run) | Q3 |
+| t02 | Sequence T with real taps (one at the end dismisses, one near the start changes) | Q3 |
+| f01 | Interaction attached and removed at the same times, no menu | Q4 |
+| f02 | Menu, no interaction ever (should equal s01) | Q4 |
+| f03 / f04 / f05 | Removed in `willDismiss` / 2 s after the completion / never | Q4 |
+| f06 | The selection moves to the end 1 s after the removal, not with the dismissal | Q4 |
+| f07 | No guard, engine workaround off | Q4 |
+| f08 | No guard, engine workaround on | Q4 |
+| f09 | No guard, the earlier delegate put back after the removal | Q4 |
+| f10 / f11 | Typed and changed once before the menu, text restored; same focus session / resign and become (sequence B's history) | Q4 |
+| f12 / f13 | A second menu without interaction after the first; hidden at the first key / dismissed before typing | Q4 |
+| f14 | A real tap at the end before typing (selection unchanged) | Q4 |
+| f15 / f16 | After the removal: `textInput = nil` / the object released | Q4 |
+| f17 / f18 | Two menu cycles, same interaction / a new one each | Q4 |
+| f19 / f20 | After the removal: `reloadInputViews()` / resign and become first responder | Q4 |
+| f21 / f22 | After the removal: selection / text will-did-change without a change | Q4 |
+| f23 / f24 / f25 / f26 | t01 with a silent final change / 1x1 view / visible full-size view / inline predictions on | Q4 |
+| f27 / f28 | t01 with a `.nonEditable` interaction / with `interactionShouldBegin` false | Q4 |
+
+The ids in full are in `MenuProbe/AutocorrectVariants.swift`. The UI tests are
+`MenuProbeUITests/AutocorrectProbeUITests.swift`, a class in the existing UI
+test target (`menu-probe.yml` skips it).
+
+## Dispatching a run
+
+```
+gh workflow run autocorrect-probe.yml --ref speakblend/menu-probe
+gh workflow run autocorrect-probe.yml --ref speakblend/menu-probe -f tests="test_01_t01 test_13_f02"
+```
+
+`.github/workflows/autocorrect-probe.yml` runs only this class on iOS 26
+(Xcode 26), 18.6 and 17.5 (Xcode 16), on `macos-15`. A push of its own file
+starts a run whose job is skipped; that only registers the workflow. Artifact:
+`autocorrect-probe-ios<version>`.
+
+## Reading the summary
+
+`summary.txt`, one line per variant:
+`ac-<id> | ios=<v> | <the app's result> | suggestionsBeforeChange=[...] | literalOffered=... | test=[...]`.
+
+- `committed=true|false`: the text 2 s after the final change differs from the
+  text after typing. `committedSync`: it already differed when the change
+  returned.
+- `textAfterTyping`, `textAfterChange` (right after), `textAfter300ms`,
+  `textLate` (2 s), `selAfterTyping`, `selLate`.
+- `finalEdits=[...]`: every keyboard call on the view after typing, with the
+  step it came in: `final:will` (inside `selectionWillChange`), `final:assign`,
+  `final:did` (inside `selectionDidChange`), `final:after`, `final:awaitTap`
+  (before the app changed anything, i.e. caused by the touch), `late`. The
+  calls are `insertText`, `replace(range, withText:)`, `setMarkedText`,
+  `unmarkText`, `deleteBackward`, `SET selectedTextRange`, with the time.
+  `typingEdits` the same while typing.
+- `delegateStart`, `delegateAfterAttach`, `delegateAfterRemoval`,
+  `delegateBeforeChange`, `delegateLate`: `inputDelegate` as class@pointer.
+  `delegateSets=N ignored=K`: assignments UIKit made, and how many the guard
+  ignored.
+- `interactionsBeforeChange`, `gesturesBeforeChange`: counts on the input
+  view; `traits[...]`: what the view reports and how often UIKit read it.
+- `historyTextAfterTyping`, `historyTextLate`, `historyCommitted` (f10, f11):
+  the first round, before the menu.
+- `suggestionsBeforeChange`: the prediction bar right after typing.
+  `literalOffered=true` (a quoted entry, "keep what I typed") means an
+  autocorrection was pending. `false` or `unknown` with `committed=false`
+  proves nothing: the keyboard had nothing to commit.
+- `notes`: missing dismiss completions, taps that did not come, typing that
+  did not finish.
+
+The job summary repeats one short line per variant. Per variant the app also
+writes, under `trees/` (and `app-documents/trees/`), `ac-<id>-steps.txt` (text,
+selection, input delegate, first responder, interactions by class and
+gesture recognizer count at each step), `-edits.txt`, `-textinput-calls.txt`
+(every UITextInput call), `-events.txt`, `-views.txt` (the view tree just
+before the final change), `-menus.txt` and `-result.txt`. Screenshots:
+`screens/ac-<id>-<seq>-menu-shown.png`, `-typed.png`, `-after-tapStart.png`,
+`-after-tapEnd.png`, `-done.png`. Also `app-log.txt`, `recording.mp4`,
+`Autocorrect.xcresult`.
+
+## Limits
+
+- `ACInputView` is not the engine's view: no Flutter view behind it, no
+  framework round trip, no `FlutterTokenizer`, no scribble interaction, no
+  autofill, and `insertText` does not report to anyone. Timing is close to the
+  Flutter measurement, not equal.
+- The keyboard learns: a word typed and kept many times in one simulator may
+  stop being corrected. `literalOffered` shows whether a correction was
+  pending in each variant.
+- Native variants run with inline predictions off, as the engine's view.
+- The test reads the prediction bar through accessibility right after typing;
+  whether that changes anything for the keyboard is not known (every variant
+  does the same).

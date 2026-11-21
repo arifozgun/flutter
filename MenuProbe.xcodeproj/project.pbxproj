@@ -17,6 +17,10 @@
 		AA0000000000000000000108 /* Inspection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000209 /* Inspection.swift */; };
 		AA0000000000000000000111 /* MenuProbeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000211 /* MenuProbeUITests.swift */; };
 		AA0000000000000000000112 /* FlutterMenuUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000212 /* FlutterMenuUITests.swift */; };
+		AA0000000000000000000121 /* AutocorrectInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000231 /* AutocorrectInputView.swift */; };
+		AA0000000000000000000122 /* AutocorrectVariants.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000232 /* AutocorrectVariants.swift */; };
+		AA0000000000000000000123 /* AutocorrectViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000233 /* AutocorrectViewController.swift */; };
+		AA0000000000000000000124 /* AutocorrectProbeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000234 /* AutocorrectProbeUITests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -43,6 +47,10 @@
 		AA0000000000000000000212 /* FlutterMenuUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlutterMenuUITests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000221 /* MenuProbe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MenuProbe.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000222 /* MenuProbeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MenuProbeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000231 /* AutocorrectInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutocorrectInputView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000232 /* AutocorrectVariants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutocorrectVariants.swift; sourceTree = "<group>"; };
+		AA0000000000000000000233 /* AutocorrectViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutocorrectViewController.swift; sourceTree = "<group>"; };
+		AA0000000000000000000234 /* AutocorrectProbeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutocorrectProbeUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -83,6 +91,9 @@
 				AA0000000000000000000204 /* ProbeTextView.swift */,
 				AA0000000000000000000202 /* MenuDump.swift */,
 				AA0000000000000000000209 /* Inspection.swift */,
+				AA0000000000000000000231 /* AutocorrectInputView.swift */,
+				AA0000000000000000000232 /* AutocorrectVariants.swift */,
+				AA0000000000000000000233 /* AutocorrectViewController.swift */,
 				AA0000000000000000000208 /* Info.plist */,
 			);
 			path = MenuProbe;
@@ -93,6 +104,7 @@
 			children = (
 				AA0000000000000000000211 /* MenuProbeUITests.swift */,
 				AA0000000000000000000212 /* FlutterMenuUITests.swift */,
+				AA0000000000000000000234 /* AutocorrectProbeUITests.swift */,
 			);
 			path = MenuProbeUITests;
 			sourceTree = "<group>";
@@ -212,6 +224,9 @@
 				AA0000000000000000000106 /* Variants.swift in Sources */,
 				AA0000000000000000000107 /* ProbeViewController.swift in Sources */,
 				AA0000000000000000000108 /* Inspection.swift in Sources */,
+				AA0000000000000000000121 /* AutocorrectInputView.swift in Sources */,
+				AA0000000000000000000122 /* AutocorrectVariants.swift in Sources */,
+				AA0000000000000000000123 /* AutocorrectViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -221,6 +236,7 @@
 			files = (
 				AA0000000000000000000111 /* MenuProbeUITests.swift in Sources */,
 				AA0000000000000000000112 /* FlutterMenuUITests.swift in Sources */,
+				AA0000000000000000000124 /* AutocorrectProbeUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
