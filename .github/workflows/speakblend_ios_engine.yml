@@ -1,8 +1,12 @@
-# Records the system text magnifier on iOS 17 and 18 simulators, which Xcode 27
-# can no longer download. Each job boots one iOS version with Xcode 16.4,
-# installs the simulator Flutter.framework built by an earlier run of the
-# engine workflow, runs the probe app's integration test in
-# dev/speakblend_loupe_probe, and uploads a screen recording with the output.
+# Records the system text magnifier on iOS 26, 18 and 17 simulators. Each job
+# boots one iOS version with the Xcode that matches it: the newest installed
+# Xcode 26 for iOS 26, and Xcode 16 for iOS 18.6, 17.5 and 17.2, which newer
+# Xcodes can no longer download. A job installs the simulator Flutter.framework
+# built by an earlier run of the engine workflow (ENGINE_RUN_ID), runs the probe
+# app's integration test in dev/speakblend_loupe_probe, and records the screen.
+# The uploaded output holds the test log, the recording, and one still frame per
+# second of it (frames/) for reading how the loupe opened in each field, in
+# particular the 96 pt one, without watching the video.
 name: Speakblend iOS simulator engine
 
 on:
@@ -14,7 +18,7 @@ permissions:
 
 env:
   # The run that built and uploaded flutter-ios_debug_sim_unopt_arm64.
-  ENGINE_RUN_ID: '42131081162'
+  ENGINE_RUN_ID: '44848919388'
   # The framework's engine artifacts; on master the version otherwise comes
   # from a hash of the engine sources.
   FLUTTER_PREBUILT_ENGINE_VERSION: bffa2f388151413c6bc31e369386f0c6eb0b8e66
@@ -27,11 +31,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 18.6 comes with the runner. 17.5 has UIStandardTextCursorView and
-        # 17.2 does not; both are downloaded by Xcode 16.
-        ios: ['18.6', '17.5', '17.2']
+        # 26 (26.2) comes with the runner's Xcode 26. 18.6 comes with its
+        # Xcode 16.4. 17.5 has UIStandardTextCursorView and 17.2 does not; both
+        # are downloaded by Xcode 16.
+        include:
+          - ios: '26'
+            xcode: '26'
+          - ios: '18.6'
+            xcode: '16'
+          - ios: '17.5'
+            xcode: '16'
+          - ios: '17.2'
+            xcode: '16'
     env:
       IOS: ${{ matrix.ios }}
+      WANT_XCODE: ${{ matrix.xcode }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,16 +56,55 @@ jobs:
         # version fails flutter_test's SDK constraint.
         run: git -C flutter tag 3.50.0-1.0.pre
 
-      - name: Select Xcode 16.4
+      - name: Select Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_16.4.app
+          ls -d /Applications/Xcode*.app
+          # The newest installed release of the wanted major version, so that
+          # a patch version dropped from the image does not break the job.
+          xcode=$(python3 - <<'PY'
+          import glob, os, re
+          want = int(os.environ["WANT_XCODE"])
+          found = {}
+          for path in glob.glob("/Applications/Xcode_*.app"):
+              m = re.match(r"Xcode_(\d+(?:\.\d+)*)(.*)\.app$", os.path.basename(path))
+              if not m:
+                  continue
+              version = tuple(int(x) for x in m.group(1).split("."))
+              if version[0] != want:
+                  continue
+              beta = "beta" in m.group(2).lower() or "rc" in m.group(2).lower()
+              real = os.path.realpath(path)
+              # Prefer releases over betas, then the highest version.
+              key = (0 if beta else 1, version)
+              if real not in found or key > found[real][0]:
+                  found[real] = (key, path)
+          if found:
+              print(max(found.values())[1])
+          PY
+          )
+          if [ -z "$xcode" ]; then
+            echo "No Xcode $WANT_XCODE on this image"
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode"
+          echo "Selected $xcode"
           xcodebuild -version
           xcrun simctl list runtimes
           df -h /
 
       - name: Download the iOS runtime
         run: |
-          if xcrun simctl list runtimes | grep -q "^iOS $IOS "; then
+          # IOS is a full version (17.5) or a major one (26), which matches the
+          # newest 26.x runtime that the Xcode brings.
+          if xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          wanted = os.environ["IOS"]
+          sys.exit(0 if any(
+              r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+              and r.get("isAvailable")
+              and (r["version"] == wanted or r["version"].startswith(wanted + "."))
+              for r in json.load(sys.stdin)["runtimes"]) else 1)
+          '; then
             echo "iOS $IOS is already installed"
             exit 0
           fi
@@ -107,14 +160,23 @@ jobs:
                       if r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
                       and r.get("isAvailable")
                       and (r["version"] == wanted or r["version"].startswith(wanted + "."))]
+          if not runtimes:
+              sys.exit(0)
           runtimes.sort(key=lambda r: tuple(int(x) for x in r["version"].split(".")))
           runtime = runtimes[-1]
           iphones = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
                      if d.get("productFamily") == "iPhone"]
-          preferred = "com.apple.CoreSimulator.SimDeviceType.iPhone-15"
-          device = preferred if preferred in iphones else iphones[-1]
+          prefix = "com.apple.CoreSimulator.SimDeviceType."
+          device = next((prefix + name for name in ["iPhone-15", "iPhone-16", "iPhone-17", "iPhone-17-Pro"]
+                         if prefix + name in iphones), iphones[-1] if iphones else "")
           print(runtime["identifier"], runtime["version"], device)
-          ')
+          ') || true
+          if [ -z "${runtime:-}" ] || [ -z "${device:-}" ]; then
+            echo "No usable iOS $IOS runtime or iPhone device type"
+            xcrun simctl list runtimes
+            xcrun simctl list devicetypes
+            exit 1
+          fi
           echo "Runtime $runtime ($version) on $device"
           udid=$(xcrun simctl create loupe "$device" "$runtime")
           xcrun simctl boot "$udid"
@@ -150,6 +212,30 @@ jobs:
           wait "$recorder" || true
           cat "$out/test.log"
           exit "$status"
+
+      - name: Extract still frames
+        # Also when the test failed, as long as there is a recording.
+        if: always()
+        run: |
+          out=$GITHUB_WORKSPACE/out
+          if ! command -v ffmpeg > /dev/null; then
+            echo "ffmpeg is not on this runner; skipping the still frames"
+            exit 0
+          fi
+          mkdir -p "$out/frames"
+          found=0
+          for video in "$out"/loupe-ios-*.mp4; do
+            [ -s "$video" ] || continue
+            found=1
+            # frame-0001.png is the first second of the recording; LOUPE_STEP
+            # lines in test.log give each step's time since the test started.
+            ffmpeg -hide_banner -loglevel error -i "$video" -vf fps=1 \
+              "$out/frames/frame-%04d.png" || echo "ffmpeg failed on $video"
+          done
+          if [ "$found" = 0 ]; then
+            echo "No recording to take frames from"
+          fi
+          ls "$out/frames" | wc -l
 
       - uses: actions/upload-artifact@v4
         if: always()
