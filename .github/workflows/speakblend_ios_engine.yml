@@ -1,5 +1,5 @@
-# Builds the arm64 iOS simulator engine (debug, unoptimized) for the system
-# text magnifier branch, runs the iOS embedding XCTests the way the
+# Builds the arm64 iOS simulator engine (debug, unoptimized) for a fork
+# branch, runs the iOS embedding XCTests the way the
 # ci/ios_debug_unopt_sim_arm64 builder of flutter/flutter does, and uploads
 # the simulator Flutter.framework for local simulator tests.
 #
@@ -94,7 +94,6 @@ jobs:
               "url": "https://github.com/flutter/flutter.git",
               "custom_vars": {
                 "download_android_deps": False,
-                "download_jdk": False,
                 "download_esbuild": False,
                 "setup_githooks": False,
               },
@@ -108,7 +107,7 @@ jobs:
         working-directory: flutter/engine/src
         run: |
           ./flutter/tools/gn --ios --runtime-mode debug --simulator --unoptimized \
-            --no-lto --simulator-cpu arm64 --no-rbe --no-goma --ccache \
+            --no-lto --simulator-cpu arm64 --no-rbe --ccache \
             --target-dir "$VARIANT"
 
       - name: ninja
