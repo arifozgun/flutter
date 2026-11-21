@@ -1,0 +1,212 @@
+# Runs the edit menu probe on iOS simulators that come with the runner image:
+# builds the UIKit probe app, runs its UI test once per variant, and uploads
+# the screenshots, the suggestedActions tree dumps, the accessibility
+# hierarchies, the app log, a screen recording and the xcresult bundle, also
+# when a test fails. See README.md for how to read them.
+name: Edit menu probe
+
+on:
+  push:
+    branches: ['speakblend/menu-probe']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ${{ matrix.runner }} Xcode ${{ matrix.xcode }} iOS ${{ matrix.ios }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The newest Xcode 26 and the newest iOS 26.x runtime it can run.
+          - runner: macos-26
+            xcode: '26'
+            ios: '26'
+          # The newest Xcode and iOS runtime on the image (may be 27).
+          - runner: macos-26
+            xcode: latest
+            ios: latest
+          # A second image in case macos-26 has no usable iOS 26 runtime.
+          - runner: macos-15
+            xcode: '26'
+            ios: '26'
+    env:
+      WANT_XCODE: ${{ matrix.xcode }}
+      WANT_IOS: ${{ matrix.ios }}
+      OUT: ${{ github.workspace }}/out
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List the image's Xcodes
+        run: |
+          mkdir -p "$OUT"
+          {
+            echo "runner=${{ matrix.runner }} want xcode=$WANT_XCODE ios=$WANT_IOS"
+            sw_vers
+            ls -ld /Applications/Xcode*.app
+            df -h /
+          } 2>&1 | tee "$OUT/runner.txt"
+
+      - name: Select Xcode
+        run: |
+          xcode=$(python3 - <<'PY'
+          import glob, os, re
+          want = os.environ["WANT_XCODE"]
+          found = {}
+          for path in glob.glob("/Applications/Xcode_*.app"):
+              m = re.match(r"Xcode_(\d+(?:\.\d+)*)(.*)\.app$", os.path.basename(path))
+              if not m:
+                  continue
+              version = tuple(int(x) for x in m.group(1).split("."))
+              if want != "latest" and version[0] != int(want):
+                  continue
+              beta = "beta" in m.group(2).lower() or "rc" in m.group(2).lower()
+              real = os.path.realpath(path)
+              # Prefer releases over betas, then the highest version.
+              key = (0 if beta else 1, version) if want != "latest" else (version, 0 if beta else 1)
+              if real not in found or key > found[real][0]:
+                  found[real] = (key, path)
+          if found:
+              print(max(found.values())[1])
+          PY
+          )
+          if [ -z "$xcode" ]; then
+            echo "No Xcode for '$WANT_XCODE' on this image"
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode"
+          {
+            echo "selected $xcode"
+            xcodebuild -version
+            xcodebuild -showsdks
+            xcrun simctl list runtimes
+            xcrun simctl list devicetypes
+          } 2>&1 | tee -a "$OUT/runner.txt"
+
+      - name: Create and boot the simulator
+        run: |
+          pick_runtime() {
+            xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          want = os.environ["WANT_IOS"]
+          runtimes = [r for r in json.load(sys.stdin)["runtimes"]
+                      if r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+                      and r.get("isAvailable")
+                      and (want == "latest" or r["version"].split(".")[0] == want)]
+          if not runtimes:
+              sys.exit(0)
+          runtimes.sort(key=lambda r: tuple(int(x) for x in r["version"].split(".")))
+          runtime = runtimes[-1]
+          iphones = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
+                     if d.get("productFamily") == "iPhone"]
+          prefix = "com.apple.CoreSimulator.SimDeviceType."
+          device = next((prefix + name for name in ["iPhone-17-Pro", "iPhone-17", "iPhone-16-Pro", "iPhone-16"]
+                         if prefix + name in iphones), iphones[-1] if iphones else "")
+          print(runtime["identifier"], runtime["version"], device)
+          '
+          }
+          read -r runtime version device < <(pick_runtime) || true
+          if [ -z "${runtime:-}" ]; then
+            echo "No preinstalled iOS $WANT_IOS runtime is usable with this Xcode; downloading the matching one"
+            for attempt in 1 2 3; do
+              xcodebuild -downloadPlatform iOS && break
+              [ "$attempt" = 3 ] && exit 1
+              sleep 30
+            done
+            read -r runtime version device < <(pick_runtime) || true
+          fi
+          if [ -z "${runtime:-}" ] || [ -z "${device:-}" ]; then
+            echo "No usable runtime or iPhone device type"
+            exit 1
+          fi
+          echo "Runtime $runtime ($version) on $device" | tee -a "$OUT/runner.txt"
+          udid=$(xcrun simctl create menu-probe "$device" "$runtime")
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          # The first keyboard on a new simulator shows a slide-to-type introduction.
+          xcrun simctl spawn "$udid" defaults write com.apple.keyboard.preferences \
+            DidShowContinuousPathIntroduction -bool true
+          xcrun simctl status_bar "$udid" override --time 9:41 || true
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          echo "IOS_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Run the probe
+        run: |
+          xcrun simctl io "$UDID" recordVideo --codec=h264 --force "$OUT/recording.mp4" \
+            > "$OUT/record.log" 2>&1 &
+          recorder=$!
+          status=0
+          # TEST_RUNNER_ variables reach the UI test runner without the prefix;
+          # the test passes PROBE_OUT on to the app.
+          TEST_RUNNER_PROBE_OUT="$OUT" xcodebuild test \
+            -project MenuProbe.xcodeproj \
+            -scheme MenuProbe \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -resultBundlePath "$OUT/MenuProbe.xcresult" \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 240 \
+            CODE_SIGN_IDENTITY=- \
+            > "$OUT/xcodebuild.log" 2>&1 || status=$?
+          kill -INT "$recorder" || true
+          wait "$recorder" || true
+          grep -E "Test Case|error:|failed|passed|\*\*" "$OUT/xcodebuild.log" | tail -120 || true
+          echo "xcodebuild exit status $status"
+          exit "$status"
+
+      - name: Collect app log and app files
+        if: always()
+        run: |
+          if [ -n "${UDID:-}" ]; then
+            xcrun simctl spawn "$UDID" log show --style syslog --info --debug \
+              --predicate 'subsystem == "dev.probe.editmenu"' > "$OUT/app-log.txt" 2>&1 || true
+            container=$(xcrun simctl get_app_container "$UDID" dev.probe.editmenu data 2>/dev/null || true)
+            if [ -n "$container" ] && [ -d "$container/Documents" ]; then
+              cp -R "$container/Documents" "$OUT/app-documents"
+            fi
+          fi
+          if [ -d "$OUT/MenuProbe.xcresult" ]; then
+            xcrun xcresulttool export attachments --path "$OUT/MenuProbe.xcresult" \
+              --output-path "$OUT/attachments" > "$OUT/attachments-export.log" 2>&1 || true
+            xcrun xcresulttool get test-results summary --path "$OUT/MenuProbe.xcresult" \
+              > "$OUT/test-summary.json" 2>&1 || true
+          fi
+          ls -R "$OUT" > "$OUT/files.txt" 2>&1 || true
+          head -400 "$OUT/files.txt"
+
+      - name: Write the job summary
+        if: always()
+        run: |
+          {
+            echo "## ${{ matrix.runner }}, Xcode $WANT_XCODE, iOS ${IOS_VERSION:-?}"
+            echo '```'
+            grep -E "^selected|^Xcode [0-9]|^Runtime" "$OUT/runner.txt" || true
+            echo '```'
+            echo "### summary.txt"
+            echo '```'
+            cat "$OUT/summary.txt" 2>/dev/null || echo "(no summary.txt)"
+            echo '```'
+            for name in v00-textview-native-textview-suggestedActions v01-custom-untouched-custom-suggestedActions; do
+              for dir in "$OUT/trees" "$OUT/app-documents/trees"; do
+                if [ -f "$dir/$name.txt" ]; then
+                  echo "### $name"
+                  echo '```'
+                  head -c 20000 "$dir/$name.txt"
+                  echo '```'
+                  break
+                fi
+              done
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: menu-probe-${{ matrix.runner }}-xcode${{ matrix.xcode }}-ios${{ matrix.ios }}
+          path: out
+          if-no-files-found: warn
