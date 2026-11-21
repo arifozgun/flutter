@@ -14,6 +14,7 @@
 		AA0000000000000000000105 /* MenuBuilders.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000205 /* MenuBuilders.swift */; };
 		AA0000000000000000000106 /* Variants.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000206 /* Variants.swift */; };
 		AA0000000000000000000107 /* ProbeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000207 /* ProbeViewController.swift */; };
+		AA0000000000000000000108 /* Inspection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000209 /* Inspection.swift */; };
 		AA0000000000000000000111 /* MenuProbeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000211 /* MenuProbeUITests.swift */; };
 /* End PBXBuildFile section */
 
@@ -35,6 +36,7 @@
 		AA0000000000000000000205 /* MenuBuilders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBuilders.swift; sourceTree = "<group>"; };
 		AA0000000000000000000206 /* Variants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Variants.swift; sourceTree = "<group>"; };
 		AA0000000000000000000207 /* ProbeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeViewController.swift; sourceTree = "<group>"; };
+		AA0000000000000000000209 /* Inspection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Inspection.swift; sourceTree = "<group>"; };
 		AA0000000000000000000208 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA0000000000000000000211 /* MenuProbeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuProbeUITests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000221 /* MenuProbe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MenuProbe.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -78,6 +80,7 @@
 				AA0000000000000000000203 /* ProbeTextInputView.swift */,
 				AA0000000000000000000204 /* ProbeTextView.swift */,
 				AA0000000000000000000202 /* MenuDump.swift */,
+				AA0000000000000000000209 /* Inspection.swift */,
 				AA0000000000000000000208 /* Info.plist */,
 			);
 			path = MenuProbe;
@@ -205,6 +208,7 @@
 				AA0000000000000000000105 /* MenuBuilders.swift in Sources */,
 				AA0000000000000000000106 /* Variants.swift in Sources */,
 				AA0000000000000000000107 /* ProbeViewController.swift in Sources */,
+				AA0000000000000000000108 /* Inspection.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

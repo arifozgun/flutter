@@ -237,6 +237,145 @@ enum MenuBuilders {
         return UIMenu(title: "", children: children)
     }
 
+    // MARK: - Round 2: system groups filtered with public API only
+
+    /// One entry of the ordered list the framework sends, as the round 2
+    /// filter understands it.
+    enum Request {
+        /// cut, copy, paste, delete, selectAll: matched by the public
+        /// UIResponderStandardEditActions selector.
+        case edit(String)
+        /// The whole `UIMenu.Identifier.lookup` group. Look Up and Translate
+        /// both live in it and cannot be told apart with public API.
+        case lookUp
+        /// Same group as lookUp.
+        case translate
+        /// No public identifier or selector exists; skipped.
+        case searchWeb
+        /// The whole `UIMenu.Identifier.share` group.
+        case share
+        /// An app-defined UIAction (the framework's custom items).
+        case custom(String)
+    }
+
+    static let requestAll: [Request] = [.edit("cut"), .edit("copy"), .edit("paste"), .lookUp, .searchWeb, .share]
+    static let requestNoShare: [Request] = [.edit("cut"), .edit("copy"), .edit("paste"), .lookUp, .searchWeb]
+    static let requestNoLookUp: [Request] = [.edit("cut"), .edit("copy"), .edit("paste"), .searchWeb, .share]
+    static let requestWithCustom: [Request] = [
+        .edit("cut"), .edit("copy"), .custom("Probe Action A"), .edit("paste"), .lookUp, .searchWeb, .share, .custom("Probe Action B"),
+    ]
+
+    /// Diagnostic only, NOT shippable: keeps only the lookup group commands
+    /// whose selector name matches, to see what a Look Up row without
+    /// Translate would look like. Comparing these names is the only way to
+    /// tell the two apart; a shipped engine must not rely on them.
+    static let diagnosticLookupSelectorNames: [String: String] = ["lookUp": "_define:", "translate": "_translate:"]
+
+    static func topLevelGroup(_ identifier: UIMenu.Identifier, in suggested: [UIMenuElement]) -> UIMenu? {
+        for element in suggested {
+            if let menu = element as? UIMenu {
+                if menu.identifier == identifier { return menu }
+                if let found = topLevelGroup(identifier, in: menu.children) { return found }
+            }
+        }
+        return nil
+    }
+
+    /// Returns UIKit's own groups and commands (titles, images, identifiers,
+    /// options and sizes untouched), filtered and ordered by `request`:
+    /// consecutive edit entries become one copy of the suggested
+    /// `.standardEdit` group holding just those commands; lookUp/translate
+    /// and share add the suggested `.lookup` / `.share` group whole, so iOS
+    /// decides through canPerformAction which of its rows appear; custom
+    /// entries become UIActions, either inside the current edit group
+    /// (`splitAtCustom == false`) or as their own inline group. Everything
+    /// uses public API except the `diagnosticLookupFilter` path.
+    static func systemFiltered(
+        _ suggested: [UIMenuElement],
+        request: [Request],
+        splitAtCustom: Bool = false,
+        diagnosticLookupFilter: Bool = false
+    ) -> UIMenu {
+        let suggestedMenu = UIMenu(title: "", children: suggested)
+        let editTemplate = topLevelGroup(.standardEdit, in: suggested)
+        var children: [UIMenuElement] = []
+        var currentEdit: [UIMenuElement] = []
+        var editGroups = 0
+        var addedLookup = false
+        var lookupWanted: [String] = []
+        var lookupIndex: Int?
+        var addedShare = false
+
+        func flushEdit() {
+            guard !currentEdit.isEmpty else { return }
+            let group: UIMenu
+            if let editTemplate, editGroups == 0 {
+                group = editTemplate.replacingChildren(currentEdit)
+            } else {
+                // A second edit segment gets its own identifier: one menu
+                // should not hold two groups with the same identifier.
+                group = UIMenu(
+                    title: "", image: nil,
+                    identifier: UIMenu.Identifier("dev.probe.menu.edit.\(editGroups)"),
+                    options: .displayInline, children: currentEdit
+                )
+                group.preferredElementSize = editTemplate?.preferredElementSize ?? .medium
+            }
+            children.append(group)
+            editGroups += 1
+            currentEdit.removeAll()
+        }
+
+        func customAction(_ title: String) -> UIAction {
+            UIAction(title: title) { _ in Probe.event("custom action \"\(title)\" performed") }
+        }
+
+        for item in request {
+            switch item {
+            case .edit(let type):
+                if let selector = basicSelector(type), let command = searchCommand(selector, in: suggestedMenu) {
+                    currentEdit.append(command)
+                } else {
+                    Probe.event("systemFiltered: no suggested command for \"\(type)\"")
+                }
+            case .custom(let title):
+                if splitAtCustom || currentEdit.isEmpty {
+                    flushEdit()
+                    children.append(UIMenu(title: "", options: .displayInline, children: [customAction(title)]))
+                } else {
+                    currentEdit.append(customAction(title))
+                }
+            case .lookUp, .translate:
+                flushEdit()
+                lookupWanted.append(item.isLookUp ? "lookUp" : "translate")
+                if !addedLookup, let group = topLevelGroup(.lookup, in: suggested) {
+                    lookupIndex = children.count
+                    children.append(group)
+                    addedLookup = true
+                }
+            case .share:
+                flushEdit()
+                if !addedShare, let group = topLevelGroup(.share, in: suggested) {
+                    children.append(group)
+                    addedShare = true
+                }
+            case .searchWeb:
+                Probe.event("systemFiltered: searchWeb has no public identifier or selector; left out")
+            }
+        }
+        flushEdit()
+
+        if diagnosticLookupFilter, let index = lookupIndex, let group = children[index] as? UIMenu {
+            let names = Set(lookupWanted.compactMap { diagnosticLookupSelectorNames[$0] })
+            let kept = group.children.filter { element in
+                guard let command = element as? UICommand else { return false }
+                return names.contains(NSStringFromSelector(command.action))
+            }
+            children[index] = group.replacingChildren(kept)
+        }
+        return UIMenu(title: "", children: children)
+    }
+
     /// Sets `preferredImageVisibility = .visible` (iOS 27, set by key so the
     /// probe compiles with the iOS 26 SDK) on every element of the tree.
     /// Returns whether the property exists on this OS.
@@ -251,5 +390,12 @@ enum MenuBuilders {
             }
         }
         return true
+    }
+}
+
+extension MenuBuilders.Request {
+    var isLookUp: Bool {
+        if case .lookUp = self { return true }
+        return false
     }
 }

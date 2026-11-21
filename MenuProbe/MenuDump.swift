@@ -9,6 +9,12 @@ import os
 enum Probe {
     static let logger = Logger(subsystem: "dev.probe.editmenu", category: "probe")
     static var tag = "v00"
+    /// Launch argument `-probeRun <name>` (for example `row-lookUp` or
+    /// `gestures`): appended to the tag so each UI test run of a variant
+    /// writes its own files.
+    static var runName = ""
+    /// Called by ProbeApplication when a touch ends.
+    static var touchEnded: (() -> Void)?
     private static var eventCount = 0
 
     static var directories: [URL] {
@@ -46,11 +52,16 @@ enum Probe {
         }
     }
 
+    /// Seconds since 1970 with milliseconds. The UI test runner uses the same
+    /// clock, so its summary lines can be matched against the app's records.
+    static func stamp() -> String {
+        String(format: "%.3f", Date().timeIntervalSince1970)
+    }
+
     /// Appends one timestamped line to `<tag>-events.txt`.
     static func event(_ message: String) {
         eventCount += 1
-        let stamp = String(format: "%.3f", Date().timeIntervalSince1970)
-        write("events", "[\(stamp)] #\(eventCount) \(message)\n", append: true)
+        write("events", "[\(stamp())] #\(eventCount) \(message)\n", append: true)
     }
 }
 
@@ -198,13 +209,16 @@ enum MenuDump {
 }
 
 /// Records every selector UIKit asks a responder about, in first-asked order,
-/// with the answer given. Only names are recorded; nothing is called.
+/// with the answer given and when it was first and last asked. Only names are
+/// recorded; nothing is called.
 @MainActor
 final class ActionLog {
     private let name: String
     private var order: [String] = []
     private var answers: [String: String] = [:]
     private var counts: [String: Int] = [:]
+    private var first: [String: String] = [:]
+    private var last: [String: String] = [:]
     private var flushScheduled = false
 
     init(name: String) {
@@ -212,20 +226,36 @@ final class ActionLog {
     }
 
     func record(_ action: Selector, answer: Bool, defaultAnswer: Bool, sender: Any?) {
+        record(action, detail: "answer=\(answer) super=\(defaultAnswer) sender=\(Self.senderText(sender))")
+    }
+
+    /// Any question about a selector (canPerformAction, targetForAction, ...).
+    func record(_ action: Selector, detail: String) {
         let key = NSStringFromSelector(action)
+        let now = Probe.stamp()
         if answers[key] == nil {
             order.append(key)
+            first[key] = now
         }
-        let senderClass = sender.map { String(describing: type(of: $0)) } ?? "nil"
-        answers[key] = "answer=\(answer) super=\(defaultAnswer) sender=\(senderClass)"
+        answers[key] = detail
+        last[key] = now
         counts[key, default: 0] += 1
         scheduleFlush()
     }
 
+    static func senderText(_ sender: Any?) -> String {
+        guard let sender else { return "nil" }
+        var text = String(describing: type(of: sender))
+        if let element = sender as? UIMenuElement {
+            text += "(\"\(element.title)\" image=\(MenuDump.imageDescription(element.image)))"
+        }
+        return text
+    }
+
     func flush() {
-        var lines = ["# selector | asked count | last answer (super = what UIResponder/UITextView would answer)"]
+        var lines = ["# selector | asked count | last answer (super = what the superclass would answer) | first asked | last asked"]
         for key in order {
-            lines.append("\(key) | \(counts[key] ?? 0) | \(answers[key] ?? "")")
+            lines.append("\(key) | \(counts[key] ?? 0) | \(answers[key] ?? "") | \(first[key] ?? "") | \(last[key] ?? "")")
         }
         Probe.write(name, lines.joined(separator: "\n") + "\n")
     }

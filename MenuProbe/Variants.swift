@@ -9,6 +9,16 @@ enum ProbeHost: String {
     case custom
 }
 
+/// Where the custom view sits and who draws the text.
+enum ProbeLayout: String {
+    /// The custom view is a visible field that draws its own text.
+    case normal
+    /// FlutterTextInputView's iPhone setup: a zero-sized input view in a
+    /// zero-sized accessibility hider at the field's origin; a separate view
+    /// draws the text (FlutterLikeTextInputView, RenderedTextView).
+    case flutterLike
+}
+
 /// One probe variant. The README has the same table.
 @MainActor
 struct Variant {
@@ -16,8 +26,11 @@ struct Variant {
     let slug: String
     let host: ProbeHost
     let hypothesis: String
-    var attachesTextInteraction = false
+    var interactionMode: InteractionMode = .none
+    var layout: ProbeLayout = .normal
     var answersYesToEveryAction = false
+    /// UITextView host only: false leaves the text view without a delegate.
+    var textViewDelegate = true
     /// Builds the returned menu from suggestedActions. Returning nil from a
     /// UITextView delegate means "the system default menu".
     let build: ([UIMenuElement]) -> UIMenu?
@@ -96,7 +109,7 @@ struct Variant {
         Variant(
             number: 11, slug: "custom-textinteraction-untouched", host: .custom,
             hypothesis: "Diagnostic: the custom view with a UITextInteraction attached (the engine adds one when inputDelegate is nil). Does it change suggestedActions?",
-            attachesTextInteraction: true,
+            interactionMode: .always,
             build: { UIMenu(title: "", children: $0) }
         ),
         Variant(
@@ -124,6 +137,107 @@ struct Variant {
                 Probe.event("preferredImageVisibility supported=\(supported)")
                 return menu
             }
+        ),
+
+        // MARK: Round 2. A: when must the UITextInteraction be attached?
+        // All use the public-API filter with everything requested (D1).
+        Variant(
+            number: 16, slug: "custom-ti-always-filter-all", host: .custom,
+            hypothesis: "A/D1: UITextInteraction for the view's whole life; suggested system groups filtered to cut, copy, paste, lookUp, searchWeb, share with public API. Rows from iOS, working?",
+            interactionMode: .always,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestAll) }
+        ),
+        Variant(
+            number: 17, slug: "custom-ti-while-shown-filter-all", host: .custom,
+            hypothesis: "A: UITextInteraction attached just before presentEditMenu, removed when the dismiss animation completes. Same rows as v16, and do they still work?",
+            interactionMode: .whileMenuShown,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestAll) }
+        ),
+        Variant(
+            number: 18, slug: "custom-ti-present-only-filter-all", host: .custom,
+            hypothesis: "A: UITextInteraction attached before presentEditMenu, removed as soon as it returns (UIKit builds the menu afterwards). Are the system rows still offered?",
+            interactionMode: .presentOnly,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestAll) }
+        ),
+        Variant(
+            number: 19, slug: "custom-ti-until-will-present-filter-all", host: .custom,
+            hypothesis: "A: UITextInteraction attached before presentEditMenu, removed in willPresentMenu (menu already built). Rows shown, and do they work without the interaction?",
+            interactionMode: .untilWillPresent,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestAll) }
+        ),
+        // MARK: Round 2. B: the same in FlutterTextInputView's layout
+        Variant(
+            number: 20, slug: "flutterlike-engine-today", host: .custom,
+            hypothesis: "B baseline: Flutter today. Zero-sized input view in a zero-sized accessibility hider, text drawn by another view, the engine's transient UITextInteraction (setTextInputState) and its flat menu.",
+            interactionMode: .engineTransient, layout: .flutterLike,
+            build: { MenuBuilders.engineFlat($0) }
+        ),
+        Variant(
+            number: 21, slug: "flutterlike-ti-always-filter-all", host: .custom,
+            hypothesis: "A/B: Flutter-like layout with a UITextInteraction for the whole life. Rows, side effects (caret, handles, gestures)?",
+            interactionMode: .always, layout: .flutterLike,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestAll) }
+        ),
+        Variant(
+            number: 22, slug: "flutterlike-ti-while-shown-filter-all", host: .custom,
+            hypothesis: "A/B: Flutter-like layout, UITextInteraction only while the menu is shown. The likeliest engine design.",
+            interactionMode: .whileMenuShown, layout: .flutterLike,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestAll) }
+        ),
+        Variant(
+            number: 23, slug: "flutterlike-ti-until-will-present-filter-all", host: .custom,
+            hypothesis: "A/B: Flutter-like layout, UITextInteraction from just before presentEditMenu until willPresentMenu.",
+            interactionMode: .untilWillPresent, layout: .flutterLike,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestAll) }
+        ),
+        // MARK: Round 2. D: filtering with public API only (interaction always
+        // attached, so the system rows exist whatever A finds)
+        Variant(
+            number: 24, slug: "custom-filter-no-share", host: .custom,
+            hypothesis: "D2: request without share: cut, copy, paste, lookUp, searchWeb.",
+            interactionMode: .always,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestNoShare) }
+        ),
+        Variant(
+            number: 25, slug: "custom-filter-no-lookup", host: .custom,
+            hypothesis: "D3: request without lookUp: cut, copy, paste, searchWeb, share. The whole lookup group (Look Up and Translate) goes.",
+            interactionMode: .always,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestNoLookUp) }
+        ),
+        Variant(
+            number: 26, slug: "custom-filter-custom-in-group", host: .custom,
+            hypothesis: "D4: a custom UIAction between copy and paste, inside UIKit's standard-edit group, and another after share. Does the icon row survive an item without an image?",
+            interactionMode: .always,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestWithCustom) }
+        ),
+        Variant(
+            number: 27, slug: "custom-filter-custom-split", host: .custom,
+            hypothesis: "D4b: as v26, but each custom UIAction gets its own inline group, splitting the edit group in two.",
+            interactionMode: .always,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestWithCustom, splitAtCustom: true) }
+        ),
+        Variant(
+            number: 28, slug: "custom-filter-diag-lookup-only", host: .custom,
+            hypothesis: "DIAGNOSTIC, NOT SHIPPABLE: as v16, but the lookup group keeps only the command whose selector name is the Look Up one, to see Look Up without Translate. Needs a private selector name.",
+            interactionMode: .always,
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestAll, diagnosticLookupFilter: true) }
+        ),
+        // MARK: Round 2. E: where does Search Web come from?
+        Variant(
+            number: 29, slug: "textview-untouched-returned", host: .textView,
+            hypothesis: "E: the UITextView delegate returns suggestedActions untouched instead of nil. If Search Web disappears, UIKit adds it only for the default (nil) menu.",
+            build: { UIMenu(title: "", children: $0) }
+        ),
+        Variant(
+            number: 30, slug: "textview-no-delegate", host: .textView,
+            hypothesis: "E: a UITextView without any delegate. The menu UIKit shows when nobody is asked.",
+            textViewDelegate: false,
+            build: { _ in nil }
+        ),
+        Variant(
+            number: 31, slug: "textview-filter-all", host: .textView,
+            hypothesis: "E/D reference: the public-API filter (as v16) applied to a real UITextView's suggestions.",
+            build: { MenuBuilders.systemFiltered($0, request: MenuBuilders.requestAll) }
         ),
     ]
 }
