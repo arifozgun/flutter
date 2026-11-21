@@ -75,7 +75,7 @@ enum Probe {
 extension CGRect {
     /// `[x, y, width, height]` rounded to a tenth, for JSON.
     var probeArray: [Double] {
-        [minX, minY, width, height].map { ($0 * 10).rounded() / 10 }
+        [Double(minX), Double(minY), Double(width), Double(height)].map { ($0 * 10).rounded() / 10 }
     }
 
     /// `x,y,WxH` rounded to whole points, for logs and labels.
