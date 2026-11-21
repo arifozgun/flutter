@@ -37,6 +37,8 @@ FLUTTER_ASSERT_ARC
 - (BOOL)becomeFirstResponderFromFramework;
 - (BOOL)resignFirstResponderFromFramework;
 - (void)handleTranslateAction;
+- (void)showEditMenuWithTargetRect:(CGRect)targetRect
+                             items:(NSArray<NSDictionary*>*)items API_AVAILABLE(ios(16.0));
 @end
 
 @interface FlutterTextInputViewSpy : FlutterTextInputView
@@ -64,6 +66,41 @@ FLUTTER_ASSERT_ARC
 
 @interface FlutterSecureTextInputView : FlutterTextInputView
 @property(nonatomic, strong) UITextField* textField;
+@end
+
+// Records the completion blocks UIKit would run when an edit menu animation finishes.
+API_AVAILABLE(ios(16.0))
+@interface FlutterFakeEditMenuAnimator : NSObject <UIEditMenuInteractionAnimating>
+- (void)runCompletions;
+@end
+
+@implementation FlutterFakeEditMenuAnimator {
+  NSMutableArray<void (^)(void)>* _completions;
+}
+
+- (instancetype)init {
+  self = [super init];
+  if (self) {
+    _completions = [NSMutableArray array];
+  }
+  return self;
+}
+
+- (void)addAnimations:(void (^)(void))animations {
+}
+
+- (void)addCompletion:(void (^)(void))completion {
+  [_completions addObject:[completion copy]];
+}
+
+- (void)runCompletions {
+  NSArray<void (^)(void)>* completions = [_completions copy];
+  [_completions removeAllObjects];
+  for (void (^completion)(void) in completions) {
+    completion();
+  }
+}
+
 @end
 
 @interface FlutterTextInputPlugin ()
@@ -262,6 +299,99 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
   [textInputPlugin handleMethodCall:updateConfigCall
                              result:^(id _Nullable result){
                              }];
+}
+
+// Suggested actions shaped like the ones UIKit gives a UITextInput view: the standard edit, lookup
+// and share groups.
+- (NSArray<UIMenuElement*>*)systemSuggestedEditMenuActions API_AVAILABLE(ios(16.0)) {
+  UIMenu* standardEdit = [UIMenu menuWithTitle:@""
+                                         image:nil
+                                    identifier:UIMenuStandardEdit
+                                       options:UIMenuOptionsDisplayInline
+                                      children:@[
+                                        [UICommand commandWithTitle:@"Cut"
+                                                              image:nil
+                                                             action:@selector(cut:)
+                                                       propertyList:nil],
+                                        [UICommand commandWithTitle:@"Copy"
+                                                              image:nil
+                                                             action:@selector(copy:)
+                                                       propertyList:nil],
+                                        [UICommand commandWithTitle:@"Paste"
+                                                              image:nil
+                                                             action:@selector(paste:)
+                                                       propertyList:nil],
+                                        [UICommand commandWithTitle:@"Delete"
+                                                              image:nil
+                                                             action:@selector(delete:)
+                                                       propertyList:nil],
+                                        [UICommand commandWithTitle:@"Select All"
+                                                              image:nil
+                                                             action:@selector(selectAll:)
+                                                       propertyList:nil],
+                                      ]];
+  UIMenu* lookup =
+      [UIMenu menuWithTitle:@""
+                      image:nil
+                 identifier:UIMenuLookup
+                    options:UIMenuOptionsDisplayInline
+                   children:@[
+                     [UICommand commandWithTitle:@"Look Up"
+                                           image:nil
+                                          action:NSSelectorFromString(@"testLookUp:")
+                                    propertyList:nil],
+                     [UICommand commandWithTitle:@"Translate"
+                                           image:nil
+                                          action:NSSelectorFromString(@"testTranslate:")
+                                    propertyList:nil],
+                   ]];
+  UIMenu* share =
+      [UIMenu menuWithTitle:@""
+                      image:nil
+                 identifier:UIMenuShare
+                    options:UIMenuOptionsDisplayInline
+                   children:@[ [UICommand commandWithTitle:@"Share…"
+                                                     image:nil
+                                                    action:NSSelectorFromString(@"testShare:")
+                                              propertyList:nil] ]];
+  return @[ standardEdit, lookup, share ];
+}
+
+// Sets a client on textInputPlugin and returns its active view, which reports itself as the first
+// responder and presents through a mocked edit menu interaction. Each presented configuration is
+// added to configurations.
+- (FlutterTextInputView*)editMenuInputViewRecordingConfigurations:
+    (NSMutableArray<UIEditMenuConfiguration*>*)configurations API_AVAILABLE(ios(16.0)) {
+  [viewController loadView];
+  [self setClientId:123 configuration:self.mutableTemplateCopy];
+  FlutterTextInputView* mockInputView = OCMPartialMock(textInputPlugin.activeView);
+  OCMStub([mockInputView isFirstResponder]).andReturn(YES);
+  id mockInteraction = OCMClassMock([UIEditMenuInteraction class]);
+  OCMStub([mockInputView editMenuInteraction]).andReturn(mockInteraction);
+  OCMStub([mockInteraction presentEditMenuWithConfiguration:[OCMArg any]])
+      .andDo(^(NSInvocation* invocation) {
+        __unsafe_unretained UIEditMenuConfiguration* config;
+        [invocation getArgument:&config atIndex:2];
+        [configurations addObject:config];
+      });
+  return mockInputView;
+}
+
+- (void)showEditMenuWithItems:(NSArray<NSDictionary*>*)items API_AVAILABLE(ios(16.0)) {
+  NSDictionary<NSString*, NSNumber*>* encodedTargetRect =
+      @{@"x" : @(0), @"y" : @(0), @"width" : @(100), @"height" : @(50)};
+  BOOL shownEditMenu =
+      [textInputPlugin showEditMenu:@{@"targetRect" : encodedTargetRect, @"items" : items}];
+  XCTAssertTrue(shownEditMenu, @"Should show edit menu.");
+}
+
+- (BOOL)hasTextInteraction:(UIView*)view {
+  for (id<UIInteraction> interaction in view.interactions) {
+    if ([interaction isKindOfClass:[UITextInteraction class]]) {
+      return YES;
+    }
+  }
+  return NO;
 }
 
 #pragma mark - Tests
@@ -3663,7 +3793,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldPresentEditMenuWithCorectItemsAndCorrectOrderingForBasicEditingActions {
-  if (@available(iOS 16.0, *)) {
+  if (@available(iOS 17.0, *)) {
     FlutterTextInputPlugin* myInputPlugin =
         [[FlutterTextInputPlugin alloc] initWithDelegate:OCMClassMock([FlutterEngine class])];
     FlutterViewController* myViewController = [[FlutterViewController alloc] init];
@@ -3717,14 +3847,19 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
     UIMenu* menu = [myInputView editMenuInteraction:mockInteraction
                                menuForConfiguration:OCMClassMock([UIEditMenuConfiguration class])
                                    suggestedActions:suggestedActions];
-    // The item ordering should follow the encoded data sent from the framework.
+    // Without a suggested UIMenuStandardEdit group, the edit commands share one inline group. The
+    // item ordering should follow the encoded data sent from the framework.
+    XCTAssertEqual(menu.children.count, 1UL);
+    UIMenu* editGroup = (UIMenu*)menu.children[0];
+    XCTAssertTrue([editGroup isKindOfClass:[UIMenu class]]);
+    XCTAssertTrue(editGroup.options & UIMenuOptionsDisplayInline);
     NSArray<UICommand*>* expectedChildren = @[ pasteItem, copyItem ];
-    XCTAssertEqualObjects(menu.children, expectedChildren);
+    XCTAssertEqualObjects(editGroup.children, expectedChildren);
   }
 }
 
 - (void)testEditMenu_shouldPresentEditMenuWithCorectItemsUnderNestedSubtreeForBasicEditingActions {
-  if (@available(iOS 16.0, *)) {
+  if (@available(iOS 17.0, *)) {
     FlutterTextInputPlugin* myInputPlugin =
         [[FlutterTextInputPlugin alloc] initWithDelegate:OCMClassMock([FlutterEngine class])];
     FlutterViewController* myViewController = [[FlutterViewController alloc] init];
@@ -3797,13 +3932,16 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
                                menuForConfiguration:OCMClassMock([UIEditMenuConfiguration class])
                                    suggestedActions:suggestedActions];
     // The item ordering should follow the encoded data sent from the framework.
+    XCTAssertEqual(menu.children.count, 1UL);
+    UIMenu* editGroup = (UIMenu*)menu.children[0];
+    XCTAssertTrue([editGroup isKindOfClass:[UIMenu class]]);
     NSArray<UICommand*>* expectedActions = @[ cutItem, pasteItem, copyItem ];
-    XCTAssertEqualObjects(menu.children, expectedActions);
+    XCTAssertEqualObjects(editGroup.children, expectedActions);
   }
 }
 
 - (void)testEditMenu_shouldPresentEditMenuWithCorectItemsForMoreAdditionalItems {
-  if (@available(iOS 16.0, *)) {
+  if (@available(iOS 17.0, *)) {
     FlutterTextInputPlugin* myInputPlugin =
         [[FlutterTextInputPlugin alloc] initWithDelegate:OCMClassMock([FlutterEngine class])];
     FlutterViewController* myViewController = [[FlutterViewController alloc] init];
@@ -3853,6 +3991,8 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
       [UICommand commandWithTitle:@"copy" image:nil action:@selector(copy:) propertyList:nil],
     ];
 
+    // UIKit suggested no lookup or share group, so the engine creates these items itself, with the
+    // titles sent from the framework.
     UIMenu* menu = [myInputView editMenuInteraction:mockInteraction
                                menuForConfiguration:OCMClassMock([UIEditMenuConfiguration class])
                                    suggestedActions:suggestedActions];
@@ -3862,15 +4002,24 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
       XCTAssert(menu.children.count == 3, @"There must be 3 menu items");
     }
 
-    XCTAssert(((UICommand*)menu.children[0]).action == @selector(handleSearchWebAction),
+    UIMenu* searchWebGroup = (UIMenu*)menu.children[0];
+    XCTAssertTrue([searchWebGroup isKindOfClass:[UIMenu class]],
+                  @"Search web must be in its own group without a lookup group.");
+    XCTAssertEqual(searchWebGroup.children.count, 1UL);
+    UICommand* searchWebItem = (UICommand*)searchWebGroup.children[0];
+    XCTAssert(searchWebItem.action == @selector(handleSearchWebAction),
               @"Must create search web item in the tree.");
+    XCTAssertEqualObjects(searchWebItem.title, @"Search Web");
     XCTAssert(((UICommand*)menu.children[1]).action == @selector(handleLookUpAction),
               @"Must create look up item in the tree.");
+    XCTAssertEqualObjects(((UICommand*)menu.children[1]).title, @"Look Up");
     XCTAssert(((UICommand*)menu.children[2]).action == @selector(handleShareAction),
               @"Must create share item in the tree.");
+    XCTAssertEqualObjects(((UICommand*)menu.children[2]).title, @"Share");
     if (@available(iOS 17.4, *)) {
       XCTAssert(((UICommand*)menu.children[3]).action == @selector(handleTranslateAction),
                 @"Must create translate item in the tree.");
+      XCTAssertEqualObjects(((UICommand*)menu.children[3]).title, @"Translate");
     }
   }
 }
@@ -4410,7 +4559,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldCreateCustomMenuItemWithCorrectProperties {
-  if (@available(iOS 16.0, *)) {
+  if (@available(iOS 17.0, *)) {
     FlutterTextInputPlugin* myInputPlugin =
         [[FlutterTextInputPlugin alloc] initWithDelegate:OCMClassMock([FlutterEngine class])];
     FlutterViewController* myViewController = [[FlutterViewController alloc] init];
@@ -4447,9 +4596,13 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
                                menuForConfiguration:OCMClassMock([UIEditMenuConfiguration class])
                                    suggestedActions:@[]];
 
-    XCTAssertEqual(menu.children.count, 2UL, @"Should create 2 custom menu items");
-    UIAction* firstAction = (UIAction*)menu.children[0];
-    UIAction* secondAction = (UIAction*)menu.children[1];
+    // Consecutive custom items share one inline group.
+    XCTAssertEqual(menu.children.count, 1UL, @"Should create 1 group for the custom menu items");
+    UIMenu* customGroup = (UIMenu*)menu.children[0];
+    XCTAssertTrue(customGroup.options & UIMenuOptionsDisplayInline);
+    XCTAssertEqual(customGroup.children.count, 2UL, @"Should create 2 custom menu items");
+    UIAction* firstAction = (UIAction*)customGroup.children[0];
+    UIAction* secondAction = (UIAction*)customGroup.children[1];
     XCTAssertEqualObjects(firstAction.title, @"Custom Action 1",
                           @"First action title should match");
     XCTAssertEqualObjects(secondAction.title, @"Custom Action 2",
@@ -4458,7 +4611,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_customActionShouldTriggerDelegateCallback {
-  if (@available(iOS 16.0, *)) {
+  if (@available(iOS 17.0, *)) {
     id mockEngine = OCMClassMock([FlutterEngine class]);
     id mockPlatformChannel = OCMClassMock([FlutterMethodChannel class]);
     OCMStub([mockEngine platformChannel]).andReturn(mockPlatformChannel);
@@ -4512,16 +4665,282 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
                                menuForConfiguration:OCMClassMock([UIEditMenuConfiguration class])
                                    suggestedActions:@[]];
 
-    XCTAssertEqual(menu.children.count, 1UL, @"Should have 1 custom menu item");
-    UIAction* customAction = (UIAction*)menu.children[0];
+    XCTAssertEqual(menu.children.count, 1UL, @"Should have 1 custom menu group");
+    UIMenu* customGroup = (UIMenu*)menu.children[0];
+    XCTAssertEqual(customGroup.children.count, 1UL, @"Should have 1 custom menu item");
+    UIAction* customAction = (UIAction*)customGroup.children[0];
     XCTAssertEqualObjects(customAction.title, @"Test Action", @"Action title should match");
 
-    [myInputView.textInputDelegate flutterTextInputView:myInputView
-             performContextMenuCustomActionWithActionID:@"test-callback-id"
-                                        textInputClient:123];
+    [customAction performWithSender:nil target:nil];
 
     [self waitForExpectations:@[ expectation ] timeout:1.0];
     OCMVerifyAll(mockPlatformChannel);
+  }
+}
+
+- (void)testEditMenu_shouldBuildDefaultItemsFromSystemGroups {
+  if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+    [self showEditMenuWithItems:@[
+      @{@"type" : @"cut"}, @{@"type" : @"copy"}, @{@"type" : @"paste"}, @{@"type" : @"selectAll"},
+      @{@"type" : @"lookUp", @"title" : @"Look Up"},
+      @{@"type" : @"searchWeb", @"title" : @"Search Web"},
+      @{@"type" : @"share", @"title" : @"Share"}
+    ]];
+
+    NSArray<UIMenuElement*>* suggestedActions = [self systemSuggestedEditMenuActions];
+    UIMenu* suggestedEdit = (UIMenu*)suggestedActions[0];
+    UIMenu* suggestedLookup = (UIMenu*)suggestedActions[1];
+    UIMenu* suggestedShare = (UIMenu*)suggestedActions[2];
+    UIMenu* menu = [inputView editMenuInteraction:inputView.editMenuInteraction
+                             menuForConfiguration:configurations.firstObject
+                                 suggestedActions:suggestedActions];
+
+    XCTAssertEqual(menu.children.count, 3UL);
+
+    UIMenu* editGroup = (UIMenu*)menu.children[0];
+    XCTAssertEqualObjects(editGroup.identifier, UIMenuStandardEdit);
+    NSArray<UIMenuElement*>* expectedEditCommands = @[
+      suggestedEdit.children[0], suggestedEdit.children[1], suggestedEdit.children[2],
+      suggestedEdit.children[4]
+    ];
+    XCTAssertEqualObjects(editGroup.children, expectedEditCommands,
+                          @"Edit group must hold the suggested commands in the framework's order.");
+
+    UIMenu* lookupGroup = (UIMenu*)menu.children[1];
+    XCTAssertEqualObjects(lookupGroup.identifier, UIMenuLookup);
+    XCTAssertEqual(lookupGroup.children.count, suggestedLookup.children.count + 1);
+    XCTAssertEqualObjects(
+        [lookupGroup.children subarrayWithRange:NSMakeRange(0, suggestedLookup.children.count)],
+        suggestedLookup.children);
+    UICommand* searchWebItem = (UICommand*)lookupGroup.children.lastObject;
+    XCTAssert(searchWebItem.action == @selector(handleSearchWebAction),
+              @"Search web must be the last item of the lookup group.");
+    XCTAssertEqualObjects(searchWebItem.title, @"Search Web");
+    XCTAssertNil(searchWebItem.image);
+
+    UIMenu* shareGroup = (UIMenu*)menu.children[2];
+    XCTAssertEqualObjects(shareGroup.identifier, UIMenuShare);
+    XCTAssertEqualObjects(shareGroup.children, suggestedShare.children);
+  }
+}
+
+- (void)testEditMenu_shouldAddLookupGroupOnceForLookUpAndTranslate {
+  if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+    [self showEditMenuWithItems:@[
+      @{@"type" : @"lookUp", @"title" : @"Look Up"},
+      @{@"type" : @"translate", @"title" : @"Translate"}
+    ]];
+
+    NSArray<UIMenuElement*>* suggestedActions = [self systemSuggestedEditMenuActions];
+    UIMenu* suggestedLookup = (UIMenu*)suggestedActions[1];
+    UIMenu* menu = [inputView editMenuInteraction:inputView.editMenuInteraction
+                             menuForConfiguration:configurations.firstObject
+                                 suggestedActions:suggestedActions];
+
+    XCTAssertEqual(menu.children.count, 1UL, @"The lookup group must be added once.");
+    UIMenu* lookupGroup = (UIMenu*)menu.children[0];
+    XCTAssertEqualObjects(lookupGroup.identifier, UIMenuLookup);
+    XCTAssertEqualObjects(lookupGroup.children, suggestedLookup.children);
+  }
+}
+
+- (void)testEditMenu_shouldUseInlineEditGroupWithoutSuggestedStandardEditGroup {
+  if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+    [self showEditMenuWithItems:@[
+      @{@"type" : @"copy"}, @{@"type" : @"share", @"title" : @"Share"}, @{@"type" : @"paste"}
+    ]];
+
+    UICommand* copyItem = [UICommand commandWithTitle:@"Copy"
+                                                image:nil
+                                               action:@selector(copy:)
+                                         propertyList:nil];
+    UICommand* pasteItem = [UICommand commandWithTitle:@"Paste"
+                                                 image:nil
+                                                action:@selector(paste:)
+                                          propertyList:nil];
+    NSArray<UIMenuElement*>* suggestedActions = [self systemSuggestedEditMenuActions];
+    UIMenu* suggestedShare = (UIMenu*)suggestedActions[2];
+    UIMenu* menu = [inputView editMenuInteraction:inputView.editMenuInteraction
+                             menuForConfiguration:configurations.firstObject
+                                 suggestedActions:@[ copyItem, pasteItem, suggestedShare ]];
+
+    XCTAssertEqual(menu.children.count, 2UL);
+    UIMenu* editGroup = (UIMenu*)menu.children[0];
+    XCTAssertNotEqualObjects(editGroup.identifier, UIMenuStandardEdit);
+    XCTAssertTrue(editGroup.options & UIMenuOptionsDisplayInline);
+    NSArray<UIMenuElement*>* expectedEditCommands = @[ copyItem, pasteItem ];
+    XCTAssertEqualObjects(editGroup.children, expectedEditCommands);
+    XCTAssertEqualObjects(((UIMenu*)menu.children[1]).identifier, UIMenuShare);
+  }
+}
+
+- (void)testEditMenu_shouldPlaceCustomItemsOutsideTheEditGroup {
+  if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+    [self showEditMenuWithItems:@[
+      @{@"type" : @"cut"}, @{@"type" : @"custom", @"id" : @"a", @"title" : @"Custom A"},
+      @{@"type" : @"copy"}, @{@"type" : @"custom", @"id" : @"b", @"title" : @"Custom B"},
+      @{@"type" : @"paste"}, @{@"type" : @"lookUp", @"title" : @"Look Up"},
+      @{@"type" : @"custom", @"id" : @"c", @"title" : @"Custom C"},
+      @{@"type" : @"custom", @"id" : @"d", @"title" : @"Custom D"}
+    ]];
+
+    NSArray<UIMenuElement*>* suggestedActions = [self systemSuggestedEditMenuActions];
+    UIMenu* suggestedEdit = (UIMenu*)suggestedActions[0];
+    UIMenu* menu = [inputView editMenuInteraction:inputView.editMenuInteraction
+                             menuForConfiguration:configurations.firstObject
+                                 suggestedActions:suggestedActions];
+
+    // Edit group, custom A and B, lookup group, custom C and D.
+    XCTAssertEqual(menu.children.count, 4UL);
+
+    UIMenu* editGroup = (UIMenu*)menu.children[0];
+    XCTAssertEqualObjects(editGroup.identifier, UIMenuStandardEdit);
+    NSArray<UIMenuElement*>* expectedEditCommands =
+        @[ suggestedEdit.children[0], suggestedEdit.children[1], suggestedEdit.children[2] ];
+    XCTAssertEqualObjects(editGroup.children, expectedEditCommands,
+                          @"Edit group must hold only system commands.");
+
+    UIMenu* firstCustomGroup = (UIMenu*)menu.children[1];
+    XCTAssertTrue(firstCustomGroup.options & UIMenuOptionsDisplayInline);
+    XCTAssertEqual(firstCustomGroup.children.count, 2UL);
+    XCTAssertEqualObjects(((UIAction*)firstCustomGroup.children[0]).title, @"Custom A");
+    XCTAssertEqualObjects(((UIAction*)firstCustomGroup.children[1]).title, @"Custom B");
+
+    XCTAssertEqualObjects(((UIMenu*)menu.children[2]).identifier, UIMenuLookup);
+
+    UIMenu* secondCustomGroup = (UIMenu*)menu.children[3];
+    XCTAssertTrue(secondCustomGroup.options & UIMenuOptionsDisplayInline);
+    XCTAssertEqual(secondCustomGroup.children.count, 2UL);
+    XCTAssertEqualObjects(((UIAction*)secondCustomGroup.children[0]).title, @"Custom C");
+    XCTAssertEqualObjects(((UIAction*)secondCustomGroup.children[1]).title, @"Custom D");
+
+    [(UIAction*)secondCustomGroup.children[1] performWithSender:nil target:nil];
+    OCMVerify([engine flutterTextInputView:[OCMArg any]
+        performContextMenuCustomActionWithActionID:@"d"
+                                   textInputClient:123]);
+  }
+}
+
+- (void)testEditMenu_textInteractionIsAttachedOnlyForSystemTextRows {
+  if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+
+    [self showEditMenuWithItems:@[
+      @{@"type" : @"copy"}, @{@"type" : @"custom", @"id" : @"a", @"title" : @"Custom A"}
+    ]];
+    XCTAssertFalse([self hasTextInteraction:inputView]);
+
+    for (NSString* type in @[ @"lookUp", @"translate", @"share" ]) {
+      [self showEditMenuWithItems:@[ @{@"type" : type, @"title" : type} ]];
+      XCTAssertTrue([self hasTextInteraction:inputView], @"Must attach for %@.", type);
+      [self showEditMenuWithItems:@[ @{@"type" : @"copy"} ]];
+      XCTAssertFalse([self hasTextInteraction:inputView], @"Must detach after %@.", type);
+    }
+  }
+}
+
+- (void)testEditMenu_textInteractionIsRemovedWhenDismissAnimationCompletes {
+  if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+    [self showEditMenuWithItems:@[ @{@"type" : @"lookUp", @"title" : @"Look Up"} ]];
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+
+    FlutterFakeEditMenuAnimator* animator = [[FlutterFakeEditMenuAnimator alloc] init];
+    [inputView editMenuInteraction:inputView.editMenuInteraction
+        willDismissMenuForConfiguration:configurations.lastObject
+                               animator:animator];
+    // A row's action can still arrive after this callback.
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+
+    [animator runCompletions];
+    XCTAssertFalse([self hasTextInteraction:inputView]);
+  }
+}
+
+- (void)testEditMenu_olderDismissalDoesNotRemoveTextInteractionOfNewerMenu {
+  if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+    NSArray<NSDictionary*>* items = @[ @{@"type" : @"share", @"title" : @"Share"} ];
+
+    // The first menu starts dismissing, then the framework shows the menu again.
+    [self showEditMenuWithItems:items];
+    FlutterFakeEditMenuAnimator* firstAnimator = [[FlutterFakeEditMenuAnimator alloc] init];
+    [inputView editMenuInteraction:inputView.editMenuInteraction
+        willDismissMenuForConfiguration:configurations[0]
+                               animator:firstAnimator];
+    [self showEditMenuWithItems:items];
+    [firstAnimator runCompletions];
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+
+    // The first menu's dismissal is reported only after the second menu was shown.
+    FlutterFakeEditMenuAnimator* lateAnimator = [[FlutterFakeEditMenuAnimator alloc] init];
+    [inputView editMenuInteraction:inputView.editMenuInteraction
+        willDismissMenuForConfiguration:configurations[0]
+                               animator:lateAnimator];
+    [lateAnimator runCompletions];
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+
+    FlutterFakeEditMenuAnimator* secondAnimator = [[FlutterFakeEditMenuAnimator alloc] init];
+    [inputView editMenuInteraction:inputView.editMenuInteraction
+        willDismissMenuForConfiguration:configurations[1]
+                               animator:secondAnimator];
+    [secondAnimator runCompletions];
+    XCTAssertFalse([self hasTextInteraction:inputView]);
+  }
+}
+
+- (void)testEditMenu_textInteractionIsRemovedOnResignFirstResponder {
+  if (@available(iOS 17.0, *)) {
+    FlutterTextInputView* inputView = [[FlutterTextInputView alloc] initWithOwner:textInputPlugin];
+    [UIApplication.sharedApplication.keyWindow addSubview:inputView];
+    [inputView setTextInputClient:123];
+    XCTAssertTrue([inputView becomeFirstResponderFromFramework]);
+    FlutterTextInputView* mockInputView = OCMPartialMock(inputView);
+    id mockInteraction = OCMClassMock([UIEditMenuInteraction class]);
+    OCMStub([mockInputView editMenuInteraction]).andReturn(mockInteraction);
+
+    [mockInputView showEditMenuWithTargetRect:CGRectZero
+                                        items:@[ @{@"type" : @"lookUp", @"title" : @"Look Up"} ]];
+    XCTAssertTrue([self hasTextInteraction:mockInputView]);
+
+    XCTAssertTrue([mockInputView resignFirstResponder]);
+    XCTAssertFalse([self hasTextInteraction:mockInputView]);
+    [mockInputView removeFromSuperview];
+  }
+}
+
+- (void)testEditMenu_textInteractionIsRemovedWhenViewLeavesWindow {
+  if (@available(iOS 17.0, *)) {
+    FlutterTextInputView* inputView = [[FlutterTextInputView alloc] initWithOwner:textInputPlugin];
+    [UIApplication.sharedApplication.keyWindow addSubview:inputView];
+    FlutterTextInputView* mockInputView = OCMPartialMock(inputView);
+    id mockInteraction = OCMClassMock([UIEditMenuInteraction class]);
+    OCMStub([mockInputView editMenuInteraction]).andReturn(mockInteraction);
+
+    [mockInputView showEditMenuWithTargetRect:CGRectZero
+                                        items:@[ @{@"type" : @"share", @"title" : @"Share"} ]];
+    XCTAssertTrue([self hasTextInteraction:mockInputView]);
+
+    [mockInputView removeFromSuperview];
+    XCTAssertFalse([self hasTextInteraction:mockInputView]);
   }
 }
 
