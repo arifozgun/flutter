@@ -4944,8 +4944,9 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
   }
 }
 
-// The UIKit behaviour the tests below depend on: attaching a text interaction replaces the view's
-// inputDelegate, and removing it leaves inputDelegate nil.
+// The UIKit behaviour setInputDelegate: guards against: attaching a text interaction replaces the
+// view's inputDelegate, and removing it leaves inputDelegate nil. This interaction is not the edit
+// menu's, so the view applies both assignments.
 - (void)testEditMenu_textInteractionReplacesAndClearsInputDelegate {
   if (@available(iOS 17.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
@@ -4966,7 +4967,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
   }
 }
 
-- (void)testEditMenu_inputDelegateIsRestoredWhenDismissAnimationCompletes {
+- (void)testEditMenu_inputDelegateIsKeptWhileTextInteractionIsAttached {
   if (@available(iOS 17.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
@@ -4975,7 +4976,34 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
     inputView.inputDelegate = keyboardDelegate;
 
     [self showEditMenuWithItems:@[ @{@"type" : @"lookUp", @"title" : @"Look Up"} ]];
-    XCTAssertNotEqual(inputView.inputDelegate, keyboardDelegate);
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+    XCTAssertEqual(inputView.inputDelegate, keyboardDelegate);
+
+    FlutterFakeEditMenuAnimator* animator = [[FlutterFakeEditMenuAnimator alloc] init];
+    [inputView editMenuInteraction:inputView.editMenuInteraction
+        willDismissMenuForConfiguration:configurations.lastObject
+                               animator:animator];
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+    XCTAssertEqual(inputView.inputDelegate, keyboardDelegate);
+
+    [animator runCompletions];
+    XCTAssertFalse([self hasTextInteraction:inputView]);
+    XCTAssertEqual(inputView.inputDelegate, keyboardDelegate);
+  }
+}
+
+- (void)testEditMenu_inputDelegateIsKeptWhenMenuIsShownAgain {
+  if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+    id<UITextInputDelegate> keyboardDelegate = OCMProtocolMock(@protocol(UITextInputDelegate));
+    inputView.inputDelegate = keyboardDelegate;
+
+    [self showEditMenuWithItems:@[ @{@"type" : @"lookUp", @"title" : @"Look Up"} ]];
+    [self showEditMenuWithItems:@[ @{@"type" : @"share", @"title" : @"Share"} ]];
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+    XCTAssertEqual(inputView.inputDelegate, keyboardDelegate);
 
     FlutterFakeEditMenuAnimator* animator = [[FlutterFakeEditMenuAnimator alloc] init];
     [inputView editMenuInteraction:inputView.editMenuInteraction
@@ -4987,7 +5015,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
   }
 }
 
-- (void)testEditMenu_inputDelegateIsRestoredWhenNewMenuHasNoSystemTextRows {
+- (void)testEditMenu_inputDelegateIsKeptWhenNewMenuHasNoSystemTextRows {
   if (@available(iOS 17.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
@@ -4996,7 +5024,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
     inputView.inputDelegate = keyboardDelegate;
 
     [self showEditMenuWithItems:@[ @{@"type" : @"share", @"title" : @"Share"} ]];
-    XCTAssertNotEqual(inputView.inputDelegate, keyboardDelegate);
+    XCTAssertEqual(inputView.inputDelegate, keyboardDelegate);
 
     [self showEditMenuWithItems:@[ @{@"type" : @"copy"} ]];
     XCTAssertFalse([self hasTextInteraction:inputView]);
@@ -5004,29 +5032,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
   }
 }
 
-- (void)testEditMenu_inputDelegateBeforeFirstMenuIsKeptWhenMenuIsShownAgain {
-  if (@available(iOS 17.0, *)) {
-    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
-    FlutterTextInputView* inputView =
-        [self editMenuInputViewRecordingConfigurations:configurations];
-    id<UITextInputDelegate> keyboardDelegate = OCMProtocolMock(@protocol(UITextInputDelegate));
-    inputView.inputDelegate = keyboardDelegate;
-
-    [self showEditMenuWithItems:@[ @{@"type" : @"lookUp", @"title" : @"Look Up"} ]];
-    // The interaction is still attached, so inputDelegate is now the interaction's own.
-    [self showEditMenuWithItems:@[ @{@"type" : @"share", @"title" : @"Share"} ]];
-    XCTAssertTrue([self hasTextInteraction:inputView]);
-
-    FlutterFakeEditMenuAnimator* animator = [[FlutterFakeEditMenuAnimator alloc] init];
-    [inputView editMenuInteraction:inputView.editMenuInteraction
-        willDismissMenuForConfiguration:configurations.lastObject
-                               animator:animator];
-    [animator runCompletions];
-    XCTAssertEqual(inputView.inputDelegate, keyboardDelegate);
-  }
-}
-
-- (void)testEditMenu_noInputDelegateIsRestoredWhenThereWasNoneBeforeMenu {
+- (void)testEditMenu_nilInputDelegateStaysNilAcrossMenu {
   if (@available(iOS 17.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
@@ -5034,6 +5040,9 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
     inputView.inputDelegate = nil;
 
     [self showEditMenuWithItems:@[ @{@"type" : @"lookUp", @"title" : @"Look Up"} ]];
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+    XCTAssertNil(inputView.inputDelegate);
+
     FlutterFakeEditMenuAnimator* animator = [[FlutterFakeEditMenuAnimator alloc] init];
     [inputView editMenuInteraction:inputView.editMenuInteraction
         willDismissMenuForConfiguration:configurations.lastObject
@@ -5044,8 +5053,41 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
   }
 }
 
-- (void)testEditMenu_inputDelegateIsNotRestoredAfterResignFirstResponder {
+// Only the view's own attaching and removing of the interaction are ignored.
+- (void)testEditMenu_otherInputDelegateAssignmentsApplyWhileTextInteractionIsAttached {
   if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+    id<UITextInputDelegate> keyboardDelegate = OCMProtocolMock(@protocol(UITextInputDelegate));
+    inputView.inputDelegate = keyboardDelegate;
+
+    [self showEditMenuWithItems:@[ @{@"type" : @"lookUp", @"title" : @"Look Up"} ]];
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+    XCTAssertEqual(inputView.inputDelegate, keyboardDelegate);
+    id<UITextInputDelegate> otherDelegate = OCMProtocolMock(@protocol(UITextInputDelegate));
+    inputView.inputDelegate = otherDelegate;
+    XCTAssertEqual(inputView.inputDelegate, otherDelegate);
+    inputView.inputDelegate = nil;
+    XCTAssertNil(inputView.inputDelegate);
+  }
+}
+
+// Resigning and becoming first responder while the edit menu's interaction is attached leave
+// inputDelegate to UIKit, as for a view that showed no menu.
+- (void)testEditMenu_inputDelegateFollowsUIKitAcrossResignFirstResponder {
+  if (@available(iOS 17.0, *)) {
+    id<UITextInputDelegate> keyboardDelegate = OCMProtocolMock(@protocol(UITextInputDelegate));
+
+    FlutterTextInputView* plainView = [[FlutterTextInputView alloc] initWithOwner:textInputPlugin];
+    [UIApplication.sharedApplication.keyWindow addSubview:plainView];
+    [plainView setTextInputClient:123];
+    XCTAssertTrue([plainView becomeFirstResponderFromFramework]);
+    plainView.inputDelegate = keyboardDelegate;
+    XCTAssertTrue([plainView resignFirstResponder]);
+    id<UITextInputDelegate> plainDelegateAfterResign = plainView.inputDelegate;
+    [plainView removeFromSuperview];
+
     FlutterTextInputView* inputView = [[FlutterTextInputView alloc] initWithOwner:textInputPlugin];
     [UIApplication.sharedApplication.keyWindow addSubview:inputView];
     [inputView setTextInputClient:123];
@@ -5060,23 +5102,27 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
           [invocation getArgument:&config atIndex:2];
           configuration = config;
         });
-    id<UITextInputDelegate> keyboardDelegate = OCMProtocolMock(@protocol(UITextInputDelegate));
     mockInputView.inputDelegate = keyboardDelegate;
 
     [mockInputView showEditMenuWithTargetRect:CGRectZero
                                         items:@[ @{@"type" : @"lookUp", @"title" : @"Look Up"} ]];
     XCTAssertTrue([self hasTextInteraction:mockInputView]);
+    XCTAssertEqual(mockInputView.inputDelegate, keyboardDelegate);
     XCTAssertTrue([mockInputView resignFirstResponder]);
-    XCTAssertNotEqual(mockInputView.inputDelegate, keyboardDelegate);
+    XCTAssertFalse([self hasTextInteraction:mockInputView]);
+    XCTAssertEqual(mockInputView.inputDelegate == keyboardDelegate,
+                   plainDelegateAfterResign == keyboardDelegate);
+    XCTAssertEqual(mockInputView.inputDelegate == nil, plainDelegateAfterResign == nil);
 
     // The menu's dismissal completes after the view became first responder again.
     XCTAssertTrue([mockInputView becomeFirstResponderFromFramework]);
+    id<UITextInputDelegate> delegateAfterBecome = mockInputView.inputDelegate;
     FlutterFakeEditMenuAnimator* animator = [[FlutterFakeEditMenuAnimator alloc] init];
     [mockInputView editMenuInteraction:mockInteraction
         willDismissMenuForConfiguration:configuration
                                animator:animator];
     [animator runCompletions];
-    XCTAssertNotEqual(mockInputView.inputDelegate, keyboardDelegate);
+    XCTAssertEqual(mockInputView.inputDelegate, delegateAfterBecome);
     [mockInputView removeFromSuperview];
   }
 }

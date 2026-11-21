@@ -871,12 +871,8 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
   // Counts edit menu presentations. Each presentation uses it as its configuration identifier, so
   // that the dismissal of an older menu does not detach the interaction a newer menu relies on.
   NSUInteger _editMenuPresentationCount;
-  // The inputDelegate the keyboard installed, remembered while _editMenuTextInteraction is
-  // attached. Attaching a text interaction replaces inputDelegate, and removing it leaves
-  // inputDelegate nil until the view next becomes first responder. Without the keyboard's own
-  // delegate, text and selection changes go through the workaround in setTextInputState: and the
-  // keyboard handles them differently, for example by applying a pending autocorrection.
-  __weak id<UITextInputDelegate> _inputDelegateBeforeEditMenu;
+  // Set while this view attaches or removes _editMenuTextInteraction. See setInputDelegate:.
+  BOOL _isChangingEditMenuTextInteraction;
 }
 
 @synthesize tokenizer = _tokenizer;
@@ -1269,16 +1265,10 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
 }
 
 - (void)removeEditMenuTextInteraction {
-  if (_editMenuTextInteraction.view != self) {
-    return;
-  }
-  id<UITextInputDelegate> inputDelegate = _inputDelegateBeforeEditMenu;
-  _inputDelegateBeforeEditMenu = nil;
-  [self removeInteraction:_editMenuTextInteraction];
-  // Only fill the gap the removal left. A view that resigned gets a new delegate from UIKit when it
-  // becomes first responder again.
-  if (inputDelegate && !self.inputDelegate && self.isFirstResponder) {
-    self.inputDelegate = inputDelegate;
+  if (_editMenuTextInteraction.view == self) {
+    _isChangingEditMenuTextInteraction = YES;
+    [self removeInteraction:_editMenuTextInteraction];
+    _isChangingEditMenuTextInteraction = NO;
   }
 }
 
@@ -1328,9 +1318,9 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
       _editMenuTextInteraction.textInput = self;
     }
     if (_editMenuTextInteraction.view != self) {
-      // Remembered only on attaching: once attached, inputDelegate is the interaction's own.
-      _inputDelegateBeforeEditMenu = self.isFirstResponder ? self.inputDelegate : nil;
+      _isChangingEditMenuTextInteraction = YES;
       [self addInteraction:_editMenuTextInteraction];
+      _isChangingEditMenuTextInteraction = NO;
     }
   } else {
     [self removeEditMenuTextInteraction];
@@ -1458,6 +1448,18 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
   _shouldNotifyFrameworkOnFirstResponderRestore = NO;
   _textInputClient = client;
   _hasPlaceholder = NO;
+}
+
+// Attaching a text interaction makes UIKit replace inputDelegate with the interaction's own, and
+// removing it sets inputDelegate to nil. For the edit menu's interaction both are ignored: the
+// keyboard keeps its own delegate, so it handles text and selection changes during and after the
+// menu as it does without one, for example it does not apply a pending autocorrection when the
+// selection moves. Other interactions, such as the one setTextInputState: adds, still set it.
+- (void)setInputDelegate:(id<UITextInputDelegate>)inputDelegate {
+  if (_isChangingEditMenuTextInteraction) {
+    return;
+  }
+  _inputDelegate = inputDelegate;
 }
 
 - (UITextInteraction*)textInteraction API_AVAILABLE(ios(13.0)) {
