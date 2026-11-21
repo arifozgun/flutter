@@ -871,6 +871,12 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
   // Counts edit menu presentations. Each presentation uses it as its configuration identifier, so
   // that the dismissal of an older menu does not detach the interaction a newer menu relies on.
   NSUInteger _editMenuPresentationCount;
+  // The inputDelegate the keyboard installed, remembered while _editMenuTextInteraction is
+  // attached. Attaching a text interaction replaces inputDelegate, and removing it leaves
+  // inputDelegate nil until the view next becomes first responder. Without the keyboard's own
+  // delegate, text and selection changes go through the workaround in setTextInputState: and the
+  // keyboard handles them differently, for example by applying a pending autocorrection.
+  __weak id<UITextInputDelegate> _inputDelegateBeforeEditMenu;
 }
 
 @synthesize tokenizer = _tokenizer;
@@ -1263,8 +1269,16 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
 }
 
 - (void)removeEditMenuTextInteraction {
-  if (_editMenuTextInteraction.view == self) {
-    [self removeInteraction:_editMenuTextInteraction];
+  if (_editMenuTextInteraction.view != self) {
+    return;
+  }
+  id<UITextInputDelegate> inputDelegate = _inputDelegateBeforeEditMenu;
+  _inputDelegateBeforeEditMenu = nil;
+  [self removeInteraction:_editMenuTextInteraction];
+  // Only fill the gap the removal left. A view that resigned gets a new delegate from UIKit when it
+  // becomes first responder again.
+  if (inputDelegate && !self.inputDelegate && self.isFirstResponder) {
+    self.inputDelegate = inputDelegate;
   }
 }
 
@@ -1314,6 +1328,8 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
       _editMenuTextInteraction.textInput = self;
     }
     if (_editMenuTextInteraction.view != self) {
+      // Remembered only on attaching: once attached, inputDelegate is the interaction's own.
+      _inputDelegateBeforeEditMenu = self.isFirstResponder ? self.inputDelegate : nil;
       [self addInteraction:_editMenuTextInteraction];
     }
   } else {
