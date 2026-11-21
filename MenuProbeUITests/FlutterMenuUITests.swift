@@ -39,9 +39,15 @@ final class FlutterMenuUITests: XCTestCase {
     func test_05_cycles() { cycles() }
     func test_06_selectionChangeWhileShown() { selectionChangeWhileShown() }
 
+    func test_07_autocorrect() { autocorrect() }
+
     // MARK: - Shared data
 
     static let defaultBundleID = "dev.probe.menuProbe"
+    static let safariID = "com.apple.mobilesafari"
+
+    /// How long a scenario waits for what a menu row opens (a sheet or Safari).
+    static let settleWindow: TimeInterval = 6
 
     /// Titles of edit menu rows on iOS 16-27 in English, plus the probe's own
     /// custom items. Only used to find the menu; every other label in the menu
@@ -105,11 +111,58 @@ final class FlutterMenuUITests: XCTestCase {
 
     // MARK: - Launch
 
+    /// Runs a UI query that can hang while the app is not in front. Should it
+    /// raise a failure, that is recorded as an expected one, so a query cannot
+    /// fail the test. The scenarios also avoid such queries (see `inFront`).
+    private func safely<T>(_ reason: String, _ fallback: T, _ body: () -> T) -> T {
+        var result = fallback
+        let options = XCTExpectedFailure.Options()
+        options.isStrict = false
+        XCTExpectFailure(reason, options: options) {
+            result = body()
+        }
+        return result
+    }
+
+    /// True while the probe app is the foreground app. Reading `state` does
+    /// not walk the element tree, so it cannot hang.
+    private func inFront(_ app: XCUIApplication) -> Bool {
+        app.state == .runningForeground
+    }
+
+    private func waitForeground(_ app: XCUIApplication, timeout: TimeInterval) -> Bool {
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end, !inFront(app) {
+            pause(0.3)
+        }
+        return inFront(app)
+    }
+
+    /// Terminates Safari when it is running. True when it was.
+    @discardableResult
+    private func stopSafari() -> Bool {
+        let safari = XCUIApplication(bundleIdentifier: Self.safariID)
+        switch safari.state {
+        case .runningForeground, .runningBackground, .runningBackgroundSuspended:
+            safely("terminate Safari", ()) { safari.terminate() }
+            pause(1.0)
+            return true
+        default:
+            return false
+        }
+    }
+
     /// Starts the Flutter app and waits for its first frame (the `supported`
-    /// line). Records the failure and returns nil when it never appears.
+    /// line). Records the failure and returns nil when it never appears. Safari
+    /// is stopped first and the app is relaunched, so that every scenario
+    /// starts from a clean state.
     private func launchApp(_ scenario: String) -> XCUIApplication? {
         continueAfterFailure = true
+        stopSafari()
         let app = XCUIApplication(bundleIdentifier: bundleID)
+        if app.state != .notRunning, app.state != .unknown {
+            app.terminate()
+        }
         app.launch()
         // The first frame of a debug build on a CI simulator can take a while.
         guard element(app, "supported").waitForExistence(timeout: 90) else {
@@ -367,13 +420,51 @@ final class FlutterMenuUITests: XCTestCase {
 
     // MARK: - Helper: reset, find a field, select a word
 
-    /// Taps the app's Reset button: texts back, no focus, no keyboard.
-    private func resetApp(_ app: XCUIApplication) {
-        let button = element(app, "probe-reset")
-        if button.exists, !button.frame.isEmpty {
-            tap(app, at: center(button.frame))
+    /// Taps the app's Reset button: texts back, no focus, no keyboard. A menu or
+    /// sheet that is still up can swallow the tap, so the status is checked
+    /// (`field=none` after a reset) and the tap is repeated after clearing what
+    /// is in the way. Returns what had to be done; empty when the first tap
+    /// worked.
+    @discardableResult
+    private func resetApp(_ app: XCUIApplication) -> String {
+        var extra: [String] = []
+        for attempt in 1...4 {
+            if !inFront(app) {
+                app.activate()
+                extra.append("activate")
+                if !waitForeground(app, timeout: 8) {
+                    extra.append("app not in front")
+                    break
+                }
+            }
+            let button = element(app, "probe-reset")
+            if button.exists, !button.frame.isEmpty {
+                tap(app, at: center(button.frame))
+            }
+            pause(1.1)
+            let status = readStatus(app)
+            if status.readable, status.field == "none" {
+                break
+            }
+            extra.append("reset#\(attempt) not applied")
+            guard attempt < 4 else { break }
+            if attempt == 2 {
+                extra.append("closed: \(backToApp(app))")
+            } else {
+                tapBlank(app)
+            }
         }
-        pause(1.1)
+        return extra.joined(separator: ", ")
+    }
+
+    /// A tap on the app's header text: it does nothing in the app, and it
+    /// dismisses a menu that is still shown.
+    private func tapBlank(_ app: XCUIApplication) {
+        let label = element(app, "supported")
+        if label.exists, !label.frame.isEmpty {
+            tap(app, at: center(label.frame))
+            pause(0.8)
+        }
     }
 
     /// The field's frame in points: by identifier, else by the text it holds.
@@ -421,21 +512,96 @@ final class FlutterMenuUITests: XCTestCase {
 
     /// Resets the app, focuses the field with one tap, double taps `word`
     /// (any word when nil) until the status shows it selected. The system menu
-    /// should be on screen after that; the caller checks.
+    /// should be on screen after that; the caller checks. When a round fails,
+    /// what is in the way (a leftover menu or sheet, the keyboard covering the
+    /// field) is cleared and the round is repeated, up to three rounds.
     private func focusAndSelect(
         _ app: XCUIApplication, _ spec: FieldSpec, word: String?, reset: Bool = true
     ) -> Selection {
+        var recovery: [String] = []
         if reset {
-            resetApp(app)
+            let done = resetApp(app)
+            if !done.isEmpty {
+                recovery.append("reset: \(done)")
+            }
         }
+        var result = Selection(ok: false, how: "not-tried", point: nil, status: readStatus(app))
+        for round in 1...3 {
+            if round > 1 {
+                recovery.append("round\(round) after \(result.how): \(recoverForSelection(app, reset: reset))")
+            }
+            result = selectOnce(app, spec, word: word)
+            if result.ok {
+                break
+            }
+        }
+        if !recovery.isEmpty {
+            result.how += "; recovery: " + recovery.joined(separator: "; ")
+        }
+        return result
+    }
+
+    /// True when the point lies under the app's status area (which sits on top
+    /// of the keyboard), where a tap does not reach the field.
+    private func hiddenBehindStatus(_ app: XCUIApplication, y: CGFloat) -> Bool {
+        let area = element(app, "status")
+        return area.exists && !area.frame.isEmpty && y > area.frame.minY - 2
+    }
+
+    /// Clears a leftover menu, sheet or keyboard before another round.
+    private func recoverForSelection(_ app: XCUIApplication, reset: Bool) -> String {
+        var done: [String] = []
+        if !inFront(app) {
+            app.activate()
+            done.append("activate")
+            if !waitForeground(app, timeout: 8) {
+                done.append("app not in front")
+                return done.joined(separator: ", ")
+            }
+        }
+        let closed = backToApp(app)
+        if closed != "nothing to dismiss" {
+            done.append("closed: \(closed)")
+        }
+        tapBlank(app)
+        done.append("tap blank")
+        if reset {
+            let again = resetApp(app)
+            done.append(again.isEmpty ? "reset" : "reset (\(again))")
+        } else {
+            let button = element(app, "probe-done")
+            if button.exists, !button.frame.isEmpty {
+                tap(app, at: center(button.frame))
+                pause(1.0)
+                done.append("Done tapped (keyboard down, texts kept)")
+            }
+        }
+        return done.joined(separator: ", ")
+    }
+
+    private func selectOnce(_ app: XCUIApplication, _ spec: FieldSpec, word: String?) -> Selection {
         guard let frame = fieldFrame(app, spec) else {
             return Selection(ok: false, how: "field-not-found", point: nil, status: readStatus(app))
         }
+        let focusY = frame.minY + min(22, frame.height / 2)
+        if hiddenBehindStatus(app, y: focusY) {
+            return Selection(ok: false, how: "field-hidden-before-focus", point: nil, status: readStatus(app))
+        }
         // One tap focuses the field and brings it above the keyboard.
-        tap(app, at: CGPoint(x: frame.minX + 24, y: frame.minY + min(22, frame.height / 2)))
+        tap(app, at: CGPoint(x: frame.minX + 24, y: focusY))
         pause(1.3)
-        let moved = fieldFrame(app, spec) ?? frame
+        var moved = fieldFrame(app, spec) ?? frame
         var status = readStatus(app)
+        if status.field != spec.id {
+            // The focus tap did not reach the field; once more.
+            tap(app, at: CGPoint(x: moved.minX + 24, y: moved.minY + min(22, moved.height / 2)))
+            pause(1.3)
+            moved = fieldFrame(app, spec) ?? moved
+            status = readStatus(app)
+        }
+        if hiddenBehindStatus(app, y: moved.minY + min(22, moved.height / 2)) {
+            return Selection(ok: false, how: "field-hidden-after-focus", point: nil, status: status)
+        }
         let points = candidatePoints(frame: moved, status: status, spec: spec, word: word)
         for (index, point) in points.enumerated() {
             doubleTap(app, at: point)
@@ -617,33 +783,58 @@ final class FlutterMenuUITests: XCTestCase {
 
     // MARK: - Helper: dismiss what a row opened
 
-    /// Closes a sheet, Safari or a card that a menu row opened, and gets back to
-    /// the app; relaunches it as a last resort. Returns what was done.
+    /// A button that closes a sheet or card. The app's own Done button (it
+    /// puts the keyboard away) is not one.
+    private func closeButton(_ app: XCUIApplication) -> XCUIElement? {
+        let predicate = NSPredicate(
+            format: "(label ==[c] 'Done' OR label ==[c] 'Close' OR label ==[c] 'Cancel' OR label ==[c] 'Dismiss') "
+                + "AND identifier != 'probe-done'"
+        )
+        let button = app.buttons.matching(predicate).firstMatch
+        return button.exists && button.isHittable ? button : nil
+    }
+
+    /// True when the app's own screen is reachable (nothing covers it).
+    private func appScreenClear(_ app: XCUIApplication) -> Bool {
+        let label = element(app, "supported")
+        return inFront(app) && label.exists && label.isHittable
+    }
+
+    /// Closes a sheet or card that a menu row opened and gets back to the app;
+    /// relaunches it as a last resort. Returns what was done. When the app is
+    /// not in front (Safari), it is brought back first and nothing in its tree
+    /// is queried before it is.
     private func backToApp(_ app: XCUIApplication) -> String {
         var done: [String] = []
         for attempt in 1...3 {
-            if app.state != .runningForeground {
+            if !inFront(app) {
                 app.activate()
                 done.append("activate")
-                pause(1.5)
-            } else if let button = ["Done", "Close", "close", "Cancel", "Dismiss"].lazy
-                .map({ app.buttons[$0] }).first(where: { $0.exists && $0.isHittable }) {
+                _ = waitForeground(app, timeout: 8)
+                pause(1.0)
+            } else if let button = closeButton(app) {
                 done.append("button \(button.label)")
                 button.tap()
                 pause(1.5)
-            } else if element(app, "supported").exists, element(app, "supported").isHittable {
+            } else if appScreenClear(app) {
                 break
+            } else if attempt == 1, element(app, "PopoverDismissRegion").exists {
+                // A popover (the share sheet of iOS 26) closes by a tap outside it.
+                done.append("tap outside")
+                app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.04)).tap()
+                pause(1.8)
             } else {
                 done.append("swipe down")
                 app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
                     .press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.98)))
                 pause(1.8)
             }
-            if app.state == .runningForeground, element(app, "supported").exists, element(app, "supported").isHittable {
+            if appScreenClear(app) {
                 break
             }
             if attempt == 3 {
                 done.append("relaunch")
+                stopSafari()
                 app.terminate()
                 app.launch()
                 _ = element(app, "supported").waitForExistence(timeout: 60)
@@ -724,15 +915,154 @@ final class FlutterMenuUITests: XCTestCase {
 
     // MARK: - Scenario: rows
 
-    /// Taps one row in the default field and in the custom-items field.
+    /// Taps one row in the default field and in the custom-items field. Each of
+    /// the two starts from a clean state: Safari stopped, the app relaunched.
     private func rows(_ row: String) {
         let key = row.replacingOccurrences(of: " ", with: "")
         let runKey = key.prefix(1).lowercased() + key.dropFirst()
-        guard let app = launchApp("rows-\(runKey)") else { return }
-        defer { app.terminate() }
         for id in ["single", "custom"] {
-            rowTap(app, Self.spec(id), row, scenario: "rows-\(runKey)-\(id)")
+            let scenario = "rows-\(runKey)-\(id)"
+            guard let app = launchApp(scenario) else { continue }
+            rowTap(app, Self.spec(id), row, scenario: scenario)
+            app.terminate()
+            stopSafari()
         }
+    }
+
+    /// Markers of a sheet, a popover or a card that a row opened. The menu
+    /// itself has none of them.
+    private func sheetLike(_ nodes: [Node]) -> Bool {
+        nodes.contains { node in
+            node.type == .sheet || node.type == .popover || node.type == .navigationBar
+                || node.label == "Sheet Grabber" || node.label == "dismiss popup"
+                || node.identifier == "PopoverDismissRegion" || node.identifier == "DDUIDone"
+                || node.identifier.hasPrefix("ShareSheet")
+                || (node.type == .button && ["close", "Close"].contains(node.label))
+        }
+    }
+
+    /// A sheet that still shows its progress indicator.
+    private func sheetLoading(_ nodes: [Node]) -> Bool {
+        nodes.contains { $0.label == "In progress" }
+    }
+
+    struct AfterTap {
+        var outcome = "nothing-visible"
+        var sheetLike = false
+        var loading = false
+        var foundAfter: TimeInterval?
+        var polls = 0
+        /// The last tree read while the probe app was in front.
+        var nodes: [Node] = []
+        var treeRead = false
+    }
+
+    /// Watches what a tapped row opens for up to `settleWindow` seconds. The
+    /// probe app's tree is read only while the app is in front, and not at all
+    /// for Search Web (which leaves for Safari) until the wait is over, so no
+    /// query can hang on an app that went to the background. The outcome comes
+    /// from the application states and, for sheets, the tree.
+    private func observeAfterTap(_ app: XCUIApplication, row: String) -> AfterTap {
+        let safari = XCUIApplication(bundleIdentifier: Self.safariID)
+        let expectsSafari = row == "Search Web"
+        let begin = Date()
+        var result = AfterTap()
+        pause(0.5)
+        while true {
+            result.polls += 1
+            let elapsed = Date().timeIntervalSince(begin)
+            if safari.state == .runningForeground {
+                result.outcome = "safari"
+                result.foundAfter = elapsed
+                break
+            }
+            if !inFront(app) {
+                result.outcome = "left-the-app"
+            } else if !expectsSafari {
+                let nodes = safely("snapshot while polling", [Node]()) { snapshotNodes(app) }
+                result.nodes = nodes
+                result.treeRead = true
+                result.sheetLike = sheetLike(nodes)
+                result.loading = sheetLoading(nodes)
+                if result.sheetLike {
+                    result.outcome = "sheet"
+                    if result.foundAfter == nil {
+                        result.foundAfter = elapsed
+                    }
+                    if !result.loading {
+                        break
+                    }
+                } else if !menuRows(nodes).isEmpty {
+                    result.outcome = "menu-still-shown"
+                } else {
+                    result.outcome = "nothing-visible"
+                }
+            }
+            if elapsed >= Self.settleWindow {
+                break
+            }
+            pause(0.5)
+        }
+        if result.outcome == "safari" {
+            // Let Safari draw something before the screenshot.
+            pause(1.0)
+        } else if result.outcome == "sheet", inFront(app) {
+            // The sheet's content draws after its frame appears.
+            pause(1.5)
+        }
+        if safari.state != .runningForeground, inFront(app) {
+            if expectsSafari || result.outcome == "sheet" {
+                result.nodes = safely("snapshot after waiting", [Node]()) { snapshotNodes(app) }
+                result.treeRead = true
+                result.sheetLike = sheetLike(result.nodes)
+                result.loading = sheetLoading(result.nodes)
+                if expectsSafari, result.outcome != "safari" {
+                    if result.sheetLike {
+                        result.outcome = "sheet"
+                    } else if !menuRows(result.nodes).isEmpty {
+                        result.outcome = "menu-still-shown"
+                    } else {
+                        result.outcome = "nothing-visible"
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    /// Gets the probe app back to the front after a row took the screen (Safari,
+    /// a sheet) and closes what is left. Nothing in the app's tree is queried
+    /// before it is in front and running.
+    private func returnToApp(_ app: XCUIApplication) -> String {
+        var done: [String] = []
+        let safari = XCUIApplication(bundleIdentifier: Self.safariID)
+        if safari.state == .runningForeground || !inFront(app) {
+            for attempt in 1...3 {
+                app.activate()
+                done.append("activate")
+                if waitForeground(app, timeout: 8) {
+                    break
+                }
+                if attempt == 2, stopSafari() {
+                    done.append("stop Safari")
+                }
+            }
+            pause(1.0)
+        }
+        if inFront(app) {
+            let closed = backToApp(app)
+            if closed != "nothing to dismiss" || done.isEmpty {
+                done.append(closed)
+            }
+        } else {
+            done.append("app not in front: relaunch")
+            stopSafari()
+            app.terminate()
+            app.launch()
+            _ = element(app, "supported").waitForExistence(timeout: 60)
+            pause(1.0)
+        }
+        return done.joined(separator: ", ")
     }
 
     private func rowTap(_ app: XCUIApplication, _ spec: FieldSpec, _ row: String, scenario: String) {
@@ -755,37 +1085,30 @@ final class FlutterMenuUITests: XCTestCase {
         saveScreenshot("\(scenario)-0-before-tap")
         notes.append("tap \(node.summary) at \(Self.stamp())")
         tap(app, at: center(node.frame))
-        pause(2.0)
 
-        let safari = XCUIApplication(bundleIdentifier: "com.apple.mobilesafari")
-        let appState = stateName(app.state)
-        let safariState = stateName(safari.state)
-        let after = snapshotNodes(app)
-        let sheetLike = after.contains { $0.type == .sheet || $0.type == .popover || $0.label == "Sheet Grabber" || $0.label == "dismiss popup" }
-        let outcome: String
-        if safari.state == .runningForeground {
-            outcome = "safari"
-        } else if app.state != .runningForeground {
-            outcome = "left-the-app"
-        } else if sheetLike {
-            outcome = "sheet"
-        } else if !menuRows(after).isEmpty {
-            outcome = "menu-still-shown"
-        } else {
-            outcome = "nothing-visible"
-        }
-        let texts = after.filter { !$0.label.isEmpty && !isOwn($0) }.prefix(20).map(\.label)
-        notes.append("after 2 s: app=\(appState) safari=\(safariState) sheetLike=\(sheetLike) outcome=\(outcome)")
-        notes.append("labelsAfter=[\(texts.joined(separator: ", "))]")
+        let observed = observeAfterTap(app, row: row)
+        let safari = XCUIApplication(bundleIdentifier: Self.safariID)
+        let texts = observed.nodes.filter { !$0.label.isEmpty && !isOwn($0) }.prefix(20).map(\.label)
+        var line = "after tap: app=\(stateName(app.state)) safari=\(stateName(safari.state)) "
+            + "sheetLike=\(observed.sheetLike) outcome=\(observed.outcome)"
+        line += " loading=\(observed.loading) foundAfter=\(observed.foundAfter.map { String(format: "%.1fs", $0) } ?? "never")"
+        line += " polls=\(observed.polls)"
+        notes.append(line)
+        notes.append(observed.treeRead ? "labelsAfter=[\(texts.joined(separator: ", "))]" : "labelsAfter=[] (tree not read: the probe app was not in front)")
         saveScreenshot("\(scenario)-1-after-tap")
-        saveHierarchy("\(scenario)-1-after-tap-hierarchy", app, nodes: after)
+        if observed.treeRead, !observed.nodes.isEmpty {
+            saveText("\(scenario)-1-after-tap-hierarchy", describe(observed.nodes))
+        } else {
+            saveText("\(scenario)-1-after-tap-hierarchy", "not captured: the probe app was not in front, so its tree was not read")
+        }
 
-        let dismissed = backToApp(app)
-        let status = readStatus(app)
+        // Safari can still arrive late; a query that hangs then is an expected failure.
+        let dismissed = safely("return to the app", "failed") { returnToApp(app) }
+        let status = inFront(app) ? safely("read the status", Status()) { readStatus(app) } : Status()
         notes.append("dismissedBy=\(dismissed)")
-        notes.append("back in app=\(app.state == .runningForeground && status.readable) status: \(status.oneLine)")
+        notes.append("back in app=\(inFront(app) && status.readable) status: \(status.oneLine)")
         saveScreenshot("\(scenario)-2-after-dismiss")
-        notes.append("RESULT=\(outcome)")
+        notes.append("RESULT=\(observed.outcome)")
     }
 
     private func stateName(_ state: XCUIApplication.State) -> String {
@@ -919,8 +1242,9 @@ final class FlutterMenuUITests: XCTestCase {
         let second = focusAndSelect(app, spec, word: "harbor", reset: false)
         notes.append("2 select=\(second.ok ? "ok" : "FAILED") (\(second.how))")
         if menuTap(app, "Look Up", notes: &notes) {
-            pause(2.0)
+            let seen = observeAfterTap(app, row: "Look Up")
             saveScreenshot("\(scenario)-2a-lookup-shown")
+            notes.append("2 lookUp outcome=\(seen.outcome)")
             notes.append("2 dismiss: \(backToApp(app))")
         } else {
             notes.append("2 Look Up not available")
@@ -1075,6 +1399,104 @@ final class FlutterMenuUITests: XCTestCase {
         } else {
             notes.append("RESULT=selection-moved-menu-back")
         }
+    }
+
+    // MARK: - Scenario: autocorrect after a menu cycle
+
+    /// The keyboard commits a pending autocorrection when the caret moves. The
+    /// first runs showed a difference after one menu cycle ("awayabc" became
+    /// "away arc" with the changed engine, not with the stock one). Five
+    /// variants, each from a reset app, record what happens. Nothing is judged
+    /// here; the two runs are compared afterwards.
+    private func autocorrect() {
+        let scenario = "autocorrect"
+        guard let app = launchApp(scenario) else { return }
+        defer { app.terminate() }
+        let spec = Self.spec("single")
+        var notes = ["start=\(Self.stamp())", supportedLine(app)]
+        defer { summary(scenario, notes) }
+
+        // A: the fresh app, no menu shown yet in this launch.
+        autocorrectProbe(app, spec, step: "A", scenario: scenario, notes: &notes)
+
+        // B: show the menu, dismiss it by a tap in the field.
+        let b = focusAndSelect(app, spec, word: "harbor")
+        let bMenu = !menuRows(waitForMenu(app)).isEmpty
+        notes.append("B: select=\(b.ok ? "ok" : "FAILED") (\(b.how)) menuShown=\(bMenu)")
+        if let frame = fieldFrame(app, spec) {
+            tap(app, at: CGPoint(x: frame.maxX - 20, y: frame.midY))
+            pause(1.0)
+            notes.append("B: menuGoneAfterTap=\(menuRows(snapshotNodes(app)).isEmpty)")
+        }
+        autocorrectProbe(app, spec, step: "B", scenario: scenario, notes: &notes)
+
+        // C: show the menu, Look Up, close the sheet.
+        let c = focusAndSelect(app, spec, word: "harbor")
+        notes.append("C: select=\(c.ok ? "ok" : "FAILED") (\(c.how))")
+        if menuTap(app, "Look Up", notes: &notes) {
+            let observed = observeAfterTap(app, row: "Look Up")
+            saveScreenshot("\(scenario)-C-lookup-shown")
+            notes.append("C: lookUp outcome=\(observed.outcome) closedBy=\(returnToApp(app))")
+        } else {
+            notes.append("C: Look Up not available")
+        }
+        autocorrectProbe(app, spec, step: "C", scenario: scenario, notes: &notes)
+
+        // D: show the menu, Copy.
+        let d = focusAndSelect(app, spec, word: "harbor")
+        notes.append("D: select=\(d.ok ? "ok" : "FAILED") (\(d.how))")
+        if menuTap(app, "Copy", notes: &notes) {
+            pause(1.0)
+            notes.append("D: Copy tapped status: \(readStatus(app).oneLine)")
+        } else {
+            notes.append("D: Copy not available")
+        }
+        autocorrectProbe(app, spec, step: "D", scenario: scenario, notes: &notes)
+
+        // E: type while the menu is shown.
+        let e = focusAndSelect(app, spec, word: "harbor")
+        let eMenu = !menuRows(waitForMenu(app)).isEmpty
+        notes.append("E: select=\(e.ok ? "ok" : "FAILED") (\(e.how)) menuShown=\(eMenu)")
+        saveScreenshot("\(scenario)-E-menu-shown")
+        let typed = typeText(app, "x")
+        let after = readStatus(app)
+        let gone = menuRows(snapshotNodes(app)).isEmpty
+        notes.append("E: typed x (\(typed)) menuGoneAfterTyping=\(gone) textAfterTyping=\"\(after.text)\" status: \(after.oneLine)")
+        saveScreenshot("\(scenario)-E-typed")
+        notes.append("RESULT=recorded (compare the A to E lines between runs)")
+    }
+
+    /// Tap at the end of the text, type "abc", tap near the start of the field,
+    /// and record the text before and after that last tap.
+    private func autocorrectProbe(
+        _ app: XCUIApplication, _ spec: FieldSpec, step: String, scenario: String, notes: inout [String]
+    ) {
+        guard let frame = fieldFrame(app, spec) else {
+            notes.append("\(step): field-not-found")
+            return
+        }
+        tap(app, at: CGPoint(x: frame.maxX - 20, y: frame.midY))
+        pause(1.3)
+        let moved = fieldFrame(app, spec) ?? frame
+        if !keyboardShown(app) {
+            tap(app, at: CGPoint(x: moved.maxX - 20, y: moved.midY))
+            pause(1.2)
+        }
+        let typed = typeText(app, "abc")
+        let typedStatus = readStatus(app)
+        saveScreenshot("\(scenario)-\(step)-typed")
+        tap(app, at: CGPoint(x: moved.minX + 24, y: moved.midY))
+        pause(1.2)
+        let tapStatus = readStatus(app)
+        saveScreenshot("\(scenario)-\(step)-after-tap")
+        let applied = typedStatus.readable && tapStatus.readable
+            ? String(typedStatus.text != tapStatus.text) : "unknown"
+        notes.append(
+            "\(step): typed abc (\(typed)) textAfterTyping=\"\(typedStatus.text)\" textAfterTap=\"\(tapStatus.text)\" "
+                + "autocorrectApplied=\(applied) selAfterTyping=\(typedStatus.base)..\(typedStatus.extent) "
+                + "selAfterTap=\(tapStatus.base)..\(tapStatus.extent) composingAfterTyping=\(typedStatus.composing) "
+                + "composingAfterTap=\(tapStatus.composing)"
+        )
     }
 
     // MARK: - Output

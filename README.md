@@ -290,10 +290,16 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
     `all=[...]` (every label in the menu's container), `mode=list` (iOS 26) or
     `paged` (17/18) with `pages=N` and each `pageK=[...]`, and the chevron taps.
   - `rows-<row>-<field>`: for Look Up, Translate, Share and Search Web in the
-    `single` and `custom` fields: how the row was found, the app's and Safari's
-    state 2 s after the tap, `outcome=` (`sheet`, `safari`, `left-the-app`,
-    `menu-still-shown`, `nothing-visible`, `row-absent`), how it was dismissed,
-    and the status afterwards.
+    `single` and `custom` fields. Each field starts from a clean state (Safari
+    stopped, the app relaunched). After the tap the scenario polls for up to 6 s
+    (`polls=`): Safari in the foreground gives `outcome=safari`; a sheet-like
+    state (sheet, popover, card, close button) that has stopped loading gives
+    `outcome=sheet`, and `foundAfter=` says when. Other outcomes: `left-the-app`,
+    `menu-still-shown`, `nothing-visible`, `row-absent`. The app's element tree
+    is read only while the app is in front, never for Search Web before the wait
+    is over; the screenshot `-1-after-tap` is taken after the wait. Then the
+    app is brought back (`dismissedBy=`) and its status is read. An older line
+    has `after 2 s:` where this has `after tap:`.
   - `edit-cutThenPaste`, `edit-copyThenPaste`, `edit-selectAll`: each step's
     status next to the expected text (`PASS` / `FAIL`).
   - `typing`: after each step (menu shown, dismissed, "abc" typed, Look Up and
@@ -304,6 +310,15 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
     rounds, whether the 20th still showed the menu, the text after typing "z".
   - `selectionChange`: a drag of the selection's end handle while the menu was
     shown; whether the selection moved, whether the menu came back, its labels.
+  - `autocorrect`: whether moving the caret by a tap commits a pending
+    autocorrection. Every variant taps at the end of the text, types `abc`,
+    taps near the start of the field, and records `textAfterTyping=`,
+    `textAfterTap=` and `autocorrectApplied=true|false` (`true` when the tap
+    changed the text), plus the selection and composing range at both points.
+    A: the fresh app. B: the menu shown, then dismissed by a tap. C: the menu,
+    Look Up, the sheet closed. D: the menu, Copy. E: `x` typed while the menu is
+    shown (`menuGoneAfterTyping=`, the text). Each variant starts from a
+    reset. The scenario judges nothing; compare the two runs.
 - `screens/`: `<scenario>-<step>.png`, for example `shape-single-1-collapsed`,
   `shape-single-2-page2`, `shape-single-2-expanded`, `rows-lookUp-single-1-after-tap`,
   `typing-2c-typed-def`, `cycles-round20`, `selectionChange-2-after-drag`.
@@ -324,4 +339,29 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
 
 A scenario that cannot find what it needs records that (with a screenshot and
 the hierarchy) and returns; the other scenarios still run. Only a launch that
-never shows the app's first screen fails a test.
+never shows the app's first screen fails a test. Queries that could hang on an
+app in the background are avoided, and the ones that remain are wrapped so that
+a failure there is an expected one, not a failed test.
+
+Selecting a word recovers when a round fails (up to three rounds): it closes a
+leftover menu or sheet, taps an empty spot, and resets the app (or, in a
+scenario that keeps the text, taps Done and focuses again). `Reset` itself is
+checked (`field=none` in the status) and repeated when a menu swallowed the tap.
+The recovery shows in the `select=` note.
+
+Marked text (a Japanese or Pinyin keyboard on the simulator) is not covered:
+no way to add the keyboard to the CI simulator was verified.
+
+## Comparing two runs
+
+```
+python3 tools/compare_runs.py <folder-of-run-A> <folder-of-run-B> [--all]
+```
+
+Each folder holds a `summary.txt` (for example two downloaded artifacts of the
+same iOS version, a baseline and an engine run). For every scenario the script
+prints the fields that differ, `A=` and `B=` under each field name. `start=`
+times, `at <time>` and the coordinates in `frame=` are ignored; `after 2 s` and
+`after tap` count as the same field. Scenarios only one run has are listed;
+`--all` also lists the ones without a difference. It reads files and prints,
+nothing else (Python 3, standard library only).

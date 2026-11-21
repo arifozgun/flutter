@@ -4,7 +4,8 @@
 # SDK of `flutter_ref` (a branch, tag or commit of this repository), installs
 # it on a simulator, and drives it with the UI tests in
 # MenuProbeUITests/FlutterMenuUITests.swift: menu shape, row taps, edit
-# commands, typing after a menu cycle, 20 menu cycles, selection changes.
+# commands, typing after a menu cycle, 20 menu cycles, selection changes,
+# autocorrection after a menu cycle.
 # Everything is uploaded, also when a test fails. See README.md for how to
 # read it.
 name: Flutter menu probe
