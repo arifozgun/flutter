@@ -16,6 +16,7 @@
 		AA0000000000000000000107 /* ProbeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000207 /* ProbeViewController.swift */; };
 		AA0000000000000000000108 /* Inspection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000209 /* Inspection.swift */; };
 		AA0000000000000000000111 /* MenuProbeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000211 /* MenuProbeUITests.swift */; };
+		AA0000000000000000000112 /* FlutterMenuUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000212 /* FlutterMenuUITests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -39,6 +40,7 @@
 		AA0000000000000000000209 /* Inspection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Inspection.swift; sourceTree = "<group>"; };
 		AA0000000000000000000208 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		AA0000000000000000000211 /* MenuProbeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuProbeUITests.swift; sourceTree = "<group>"; };
+		AA0000000000000000000212 /* FlutterMenuUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlutterMenuUITests.swift; sourceTree = "<group>"; };
 		AA0000000000000000000221 /* MenuProbe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MenuProbe.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA0000000000000000000222 /* MenuProbeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MenuProbeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -90,6 +92,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000211 /* MenuProbeUITests.swift */,
+				AA0000000000000000000212 /* FlutterMenuUITests.swift */,
 			);
 			path = MenuProbeUITests;
 			sourceTree = "<group>";
@@ -217,6 +220,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA0000000000000000000111 /* MenuProbeUITests.swift in Sources */,
+				AA0000000000000000000112 /* FlutterMenuUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

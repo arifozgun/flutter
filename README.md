@@ -193,3 +193,135 @@ MENU class=UIMenu title="" image=nil identifier=com.apple.menu.standard-edit opt
 
 `image=yes:symbol(...)` names the SF Symbol when UIKit's description has one.
 `preferredImageVisibility` is printed on iOS 27 only.
+
+# Flutter menu harness
+
+The UIKit probe above answers what UIKit does for a view like Flutter's text
+input view. This second harness shows what a real **Flutter app** does with the
+system edit menu, on the stock Flutter engine (baseline) or on a simulator
+engine built by an earlier run of an engine workflow (engine run). Running both
+on the same SDK ref and comparing the outputs shows what an engine change does
+to the menu's look and to typing around it. It runs only on GitHub Actions
+simulators: iOS 26 (a vertical menu with a chevron), iOS 18.6 and iOS 17.5 (a
+horizontal, paged bar).
+
+## What is in it
+
+- `flutter_app/`: the probe app, only `pubspec.yaml` and `lib/main.dart`. The
+  platform folder is made on CI with `flutter create --platforms=ios
+  --project-name menu_probe --org dev.probe .`, which gives the bundle id
+  `dev.probe.menuProbe` (the tests read it from the built app and fall back to
+  that). One light screen with six fields, each with a visible label and a
+  semantics identifier `field-<id>`:
+  `single` (Material `TextField`, "The quiet harbor sailed away"), `multi` (three
+  lines), `obscured`, `cupertino` (`CupertinoTextField`), `custom` (a
+  `TextField` whose `contextMenuBuilder` returns `SystemContextMenu.editableText`
+  with an explicit list: Cut, Copy, *Custom A*, Paste, Select All, Look Up,
+  Search Web, Share, *Custom B*) and `selectable` (`SelectableText`). All
+  others use Flutter's default menu, which is the system menu on iOS when
+  `SystemContextMenu.isSupported` (shown at the top of the screen). `Reset`
+  restores the texts and drops focus; `Done` only drops focus.
+  The status area at the bottom (identifier `status`) shows the focused field's
+  id, text, selection base/extent and composing range. Its accessibility label
+  also holds the rectangles of the selection and of every word in points, which
+  the tests use to double tap a word.
+  The app appends every change, focus change, menu build and custom item press
+  to `Documents/menu_probe_log.txt` (dart:io only), so results do not depend on
+  accessibility.
+- `MenuProbeUITests/FlutterMenuUITests.swift`: XCUITests that drive that app by
+  bundle id (`XCUIApplication(bundleIdentifier:)`). They are a second class in
+  the existing UI test target, not a second target: a UI test target needs a
+  target application and its own scheme, and this way the project, the scheme
+  and the signing settings that already work on the runners stay as they are.
+  The workflow runs only this class (`-only-testing`); the UIKit probe app is
+  built because the target depends on it, and not used.
+- `.github/workflows/flutter-menu.yml`: builds and runs it.
+
+## Dispatching a run
+
+`flutter_ref` is a branch, tag or commit of **this repository** (the Flutter
+SDK fork). Dispatch from the probe's branch:
+
+```
+# Baseline: the stock engine of that SDK.
+gh workflow run flutter-menu.yml --ref speakblend/menu-probe \
+  -f flutter_ref=<sdk-branch-tag-or-sha> \
+  -f prebuilt_engine_version=<engine commit that has prebuilt artifacts> \
+  -f label=baseline
+
+# Engine run: the same, plus the run that built the simulator engine.
+gh workflow run flutter-menu.yml --ref speakblend/menu-probe \
+  -f flutter_ref=<sdk-branch-tag-or-sha> \
+  -f prebuilt_engine_version=<engine commit that has prebuilt artifacts> \
+  -f engine_run_id=<id of the engine workflow run> \
+  -f label=engine
+```
+
+Inputs:
+
+- `flutter_ref` (required): the SDK to build with.
+- `engine_run_id`: a run of this repository that uploaded the artifact
+  `flutter-ios_debug_sim_unopt_arm64`. When set, its arm64 simulator
+  `Flutter.framework` replaces the arm64 slice of the cached stock one. The job
+  checks that the artifact belongs to that run and that the binary matches the
+  sha256 in its manifest. Empty: the stock engine.
+- `prebuilt_engine_version`: exported as `FLUTTER_PREBUILT_ENGINE_VERSION`. Needed
+  when the SDK ref has engine source changes, because the engine version
+  otherwise comes from a hash of the engine sources and no prebuilt artifacts
+  exist for it.
+- `label`: goes into the artifact name; default `baseline`, or `engine` when
+  `engine_run_id` is set.
+
+The workflow also has a push trigger on its own file; that run skips the job and
+only registers the workflow.
+
+The matrix runs iOS 26 (Xcode 26), 18.6 and 17.5 (Xcode 16), all on `macos-15`.
+The app is a debug simulator build (a simulator build can only be debug).
+
+## Reading the output
+
+One artifact per job, `flutter-menu-ios<version>-<label>`:
+
+- `summary.txt`: one line per scenario, `<scenario> | ios=<version> | <notes>`,
+  each ending in `RESULT=...`. Also shown in the job summary, with the tail of
+  the app's log.
+  - `shape-<field>`: how the word was selected, `collapsed=[...]` (known menu
+    titles in tree order; a row appears twice in the tree, repeats are folded),
+    `all=[...]` (every label in the menu's container), `mode=list` (iOS 26) or
+    `paged` (17/18) with `pages=N` and each `pageK=[...]`, and the chevron taps.
+  - `rows-<row>-<field>`: for Look Up, Translate, Share and Search Web in the
+    `single` and `custom` fields: how the row was found, the app's and Safari's
+    state 2 s after the tap, `outcome=` (`sheet`, `safari`, `left-the-app`,
+    `menu-still-shown`, `nothing-visible`, `row-absent`), how it was dismissed,
+    and the status afterwards.
+  - `edit-cutThenPaste`, `edit-copyThenPaste`, `edit-selectAll`: each step's
+    status next to the expected text (`PASS` / `FAIL`).
+  - `typing`: after each step (menu shown, dismissed, "abc" typed, Look Up and
+    "def", Copy and " ghi", autocorrect of "helo ", the keyboard's suggestions
+    for "wrold" and a tap on one) whether the keyboard is up and the status
+    line. A text that is missing what was typed is the regression to look for.
+  - `cycles`: `menu per round` (`M` shown, `-` missing) for 20 open/dismiss
+    rounds, whether the 20th still showed the menu, the text after typing "z".
+  - `selectionChange`: a drag of the selection's end handle while the menu was
+    shown; whether the selection moved, whether the menu came back, its labels.
+- `screens/`: `<scenario>-<step>.png`, for example `shape-single-1-collapsed`,
+  `shape-single-2-page2`, `shape-single-2-expanded`, `rows-lookUp-single-1-after-tap`,
+  `typing-2c-typed-def`, `cycles-round20`, `selectionChange-2-after-drag`.
+  `first-launch.png` is the app on its own before the tests.
+- `hierarchy/`: accessibility dumps (type, label, identifier, frame of every
+  element plus `debugDescription`) at the collapsed and expanded states, after
+  row taps and where a step failed.
+- `app-documents/menu_probe_log.txt`: the app's own log (`t=<epoch s>`, same
+  clock as the `start=` and `at` times in `summary.txt`).
+- `app-log.txt`: the simulator's unified log for the app's process.
+- `recording.mp4`: the whole test run.
+- `engine.txt`: for an engine run the manifest and slice info of the installed
+  engine; always the app's bundle id and the checksum of the app's embedded
+  `Flutter.framework`. `flutter-version.txt`, `flutter-build.log`, `runner.txt`
+  (Xcode, runtimes, SDK commit and the inputs).
+- `FlutterMenu.xcresult`, `attachments/`, `test-summary.json`, `xcodebuild.log`,
+  `first-launch.txt`.
+
+A scenario that cannot find what it needs records that (with a screenshot and
+the hierarchy) and returns; the other scenarios still run. Only a launch that
+never shows the app's first screen fails a test.

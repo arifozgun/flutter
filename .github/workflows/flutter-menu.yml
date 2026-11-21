@@ -1,0 +1,389 @@
+# Shows how the iOS system text edit menu looks and behaves in a real Flutter
+# app, with the stock Flutter engine or with a simulator engine built by an
+# earlier run of the engine workflow. It builds `flutter_app/` with the Flutter
+# SDK of `flutter_ref` (a branch, tag or commit of this repository), installs
+# it on a simulator, and drives it with the UI tests in
+# MenuProbeUITests/FlutterMenuUITests.swift: menu shape, row taps, edit
+# commands, typing after a menu cycle, 20 menu cycles, selection changes.
+# Everything is uploaded, also when a test fails. See README.md for how to
+# read it.
+name: Flutter menu probe
+
+on:
+  # The push run does nothing (the job is skipped). It only makes this workflow
+  # known to GitHub, so that it can be dispatched from a branch that is not the
+  # default branch.
+  push:
+    branches: [speakblend/menu-probe]
+    paths: ['.github/workflows/flutter-menu.yml']
+  workflow_dispatch:
+    inputs:
+      flutter_ref:
+        description: 'Branch, tag or commit of this repository that holds the Flutter SDK'
+        required: true
+        type: string
+      engine_run_id:
+        description: 'Id of a run of this repository that uploaded flutter-ios_debug_sim_unopt_arm64; empty = the stock engine (baseline)'
+        required: false
+        type: string
+        default: ''
+      prebuilt_engine_version:
+        description: 'Engine version for FLUTTER_PREBUILT_ENGINE_VERSION; needed when the SDK ref has engine source changes'
+        required: false
+        type: string
+        default: ''
+      label:
+        description: 'Short name for the artifact names (default: baseline or engine)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: iOS ${{ matrix.ios }}
+    runs-on: macos-15
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The vertical menu of iOS 26. Xcode 26 on the image; its newest iOS
+          # 26 runtime was 26.2 in the first runs.
+          - ios: '26'
+            xcode: '26'
+          # The horizontal, paging menu of iOS 16-18. Xcode 16 runs these;
+          # 18.6 comes with the image, 17.5 is downloaded.
+          - ios: '18.6'
+            xcode: '16'
+          - ios: '17.5'
+            xcode: '16'
+    env:
+      WANT_XCODE: ${{ matrix.xcode }}
+      WANT_IOS: ${{ matrix.ios }}
+      OUT: ${{ github.workspace }}/out
+      FLUTTER_REF: ${{ inputs.flutter_ref }}
+      ENGINE_RUN_ID: ${{ inputs.engine_run_id }}
+      PREBUILT_ENGINE_VERSION: ${{ inputs.prebuilt_engine_version }}
+      LABEL: ${{ inputs.label }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.flutter_ref }}
+          path: flutter
+          fetch-depth: 1
+
+      - name: Name the checkout's Flutter version
+        # The shallow checkout has no tags, and a Flutter SDK of an unknown
+        # version fails flutter_test's SDK constraint.
+        run: |
+          git -C flutter describe --tags > /dev/null 2>&1 || git -C flutter tag 3.50.0-1.0.pre
+
+      - name: Name the run
+        run: |
+          mkdir -p "$OUT"
+          label="$LABEL"
+          if [ -z "$label" ]; then
+            if [ -n "$ENGINE_RUN_ID" ]; then label=engine; else label=baseline; fi
+          fi
+          # Artifact names cannot hold most punctuation.
+          label=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-')
+          echo "ARTIFACT_NAME=flutter-menu-ios${WANT_IOS}-${label}" >> "$GITHUB_ENV"
+          if [ -n "$PREBUILT_ENGINE_VERSION" ]; then
+            echo "FLUTTER_PREBUILT_ENGINE_VERSION=$PREBUILT_ENGINE_VERSION" >> "$GITHUB_ENV"
+          fi
+          {
+            echo "label=$label want xcode=$WANT_XCODE ios=$WANT_IOS"
+            echo "flutter_ref=$FLUTTER_REF sdk commit=$(git -C flutter rev-parse HEAD)"
+            echo "engine_run_id=${ENGINE_RUN_ID:-none (stock engine)}"
+            echo "prebuilt_engine_version=${PREBUILT_ENGINE_VERSION:-unset}"
+            sw_vers
+            df -h /
+          } 2>&1 | tee "$OUT/runner.txt"
+
+      - name: Select Xcode
+        run: |
+          ls -d /Applications/Xcode*.app
+          # The newest installed release of the wanted major version, so that
+          # a patch version dropped from the image does not break the job.
+          xcode=$(python3 - <<'PY'
+          import glob, os, re
+          want = int(os.environ["WANT_XCODE"])
+          found = {}
+          for path in glob.glob("/Applications/Xcode_*.app"):
+              m = re.match(r"Xcode_(\d+(?:\.\d+)*)(.*)\.app$", os.path.basename(path))
+              if not m:
+                  continue
+              version = tuple(int(x) for x in m.group(1).split("."))
+              if version[0] != want:
+                  continue
+              beta = "beta" in m.group(2).lower() or "rc" in m.group(2).lower()
+              real = os.path.realpath(path)
+              # Prefer releases over betas, then the highest version.
+              key = (0 if beta else 1, version)
+              if real not in found or key > found[real][0]:
+                  found[real] = (key, path)
+          if found:
+              print(max(found.values())[1])
+          PY
+          )
+          if [ -z "$xcode" ]; then
+            echo "No Xcode $WANT_XCODE on this image"
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode"
+          {
+            echo "selected $xcode"
+            xcodebuild -version
+            xcodebuild -showsdks
+            xcrun simctl list runtimes
+            xcrun simctl list devicetypes
+          } 2>&1 | tee -a "$OUT/runner.txt"
+
+      - name: Download the iOS runtime
+        run: |
+          # WANT_IOS is a full version (17.5) or a major one (26), which matches
+          # the newest 26.x runtime that the Xcode brings.
+          if xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          wanted = os.environ["WANT_IOS"]
+          sys.exit(0 if any(
+              r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+              and r.get("isAvailable")
+              and (r["version"] == wanted or r["version"].startswith(wanted + "."))
+              for r in json.load(sys.stdin)["runtimes"]) else 1)
+          '; then
+            echo "iOS $WANT_IOS is already installed"
+            exit 0
+          fi
+          build_version=()
+          case "$WANT_IOS" in
+            *.*) build_version=(-buildVersion "$WANT_IOS") ;;
+          esac
+          # Apple's download server sometimes drops the connection.
+          for attempt in 1 2 3; do
+            xcodebuild -downloadPlatform iOS "${build_version[@]}" && break
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            sleep 30
+          done
+          xcrun simctl list runtimes
+          df -h /
+
+      - name: Prepare the SDK
+        run: |
+          flutter/bin/flutter --version 2>&1 | tee "$OUT/flutter-version.txt"
+          # Downloads the stock engine, whose simulator framework the next step
+          # may replace.
+          flutter/bin/flutter precache --ios
+
+      - name: Install the simulator engine
+        if: ${{ inputs.engine_run_id != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$ENGINE_RUN_ID" in
+            *[!0-9]*) echo "engine_run_id must be a run id (digits only)"; exit 1 ;;
+          esac
+          # A rerun of the engine run uploads the artifact again under the same
+          # name; take the newest live one of that run.
+          artifact=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$ENGINE_RUN_ID/artifacts?per_page=100" \
+            --jq '[.artifacts[] | select(.name == "flutter-ios_debug_sim_unopt_arm64" and (.expired | not))]
+                  | sort_by(.created_at) | last | .id')
+          if [ -z "$artifact" ] || [ "$artifact" = null ]; then
+            echo "Run $ENGINE_RUN_ID has no live artifact flutter-ios_debug_sim_unopt_arm64"
+            exit 1
+          fi
+          # The artifact is the one that run uploaded.
+          owner=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact" --jq '.workflow_run.id')
+          if [ "$owner" != "$ENGINE_RUN_ID" ]; then
+            echo "Artifact $artifact belongs to run $owner, not $ENGINE_RUN_ID"
+            exit 1
+          fi
+          mkdir engine
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact/zip" > engine/artifact.zip
+          unzip -q engine/artifact.zip -d engine
+          manifest=engine/manifest-ios_debug_sim_unopt_arm64.txt
+          cat "$manifest"
+          grep -q '^variant: ios_debug_sim_unopt_arm64$' "$manifest"
+          unzip -q engine/Flutter.framework-ios_debug_sim_unopt_arm64.zip -d engine/unzipped
+          expected=$(sed -n 's/^binary_sha256: //p' "$manifest")
+          actual=$(shasum -a 256 engine/unzipped/Flutter.framework/Flutter | cut -d' ' -f1)
+          if [ "$expected" != "$actual" ]; then
+            echo "The framework binary does not match the manifest's sha256 ($actual, expected $expected)"
+            exit 1
+          fi
+          framework=flutter/bin/cache/artifacts/engine/ios/Flutter.xcframework/ios-arm64_x86_64-simulator/Flutter.framework
+          lipo "$framework/Flutter" -replace arm64 engine/unzipped/Flutter.framework/Flutter \
+            -output engine/Flutter.fat
+          cp engine/Flutter.fat "$framework/Flutter"
+          # Before signing, the arm64 slice is the artifact's binary.
+          lipo "$framework/Flutter" -thin arm64 -output engine/arm64.check
+          if [ "$(shasum -a 256 engine/arm64.check | cut -d' ' -f1)" != "$expected" ]; then
+            echo "The installed arm64 slice is not the artifact's binary"
+            exit 1
+          fi
+          codesign --force --sign - "$framework/Flutter"
+          lipo -info "$framework/Flutter"
+          {
+            echo "engine run $ENGINE_RUN_ID, artifact $artifact"
+            cat "$manifest"
+            lipo -info "$framework/Flutter"
+          } > "$OUT/engine.txt"
+
+      - name: Build the Flutter app
+        run: |
+          # Outside the repository, so that it is not part of the SDK's pub workspace.
+          cp -R flutter_app "$RUNNER_TEMP/menu_probe"
+          cd "$RUNNER_TEMP/menu_probe"
+          flutter="$GITHUB_WORKSPACE/flutter/bin/flutter"
+          "$flutter" create --platforms=ios --project-name menu_probe --org dev.probe .
+          "$flutter" pub get
+          # Debug on purpose: a simulator build can only be a debug build, and
+          # the engine this run may install is a debug, unoptimized one.
+          "$flutter" build ios --simulator --debug 2>&1 | tee "$OUT/flutter-build.log"
+          app="$RUNNER_TEMP/menu_probe/build/ios/iphonesimulator/Runner.app"
+          test -d "$app"
+          app_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          echo "APP_PATH=$app" >> "$GITHUB_ENV"
+          echo "APP_ID=$app_id" >> "$GITHUB_ENV"
+          {
+            echo "app bundle id: $app_id"
+            lipo -info "$app/Frameworks/Flutter.framework/Flutter"
+            shasum -a 256 "$app/Frameworks/Flutter.framework/Flutter"
+          } | tee -a "$OUT/engine.txt"
+
+      - name: Create and boot the simulator
+        run: |
+          # WANT_IOS is a major version (26: the newest 26.x runtime) or a full
+          # one (18.6, 17.5).
+          read -r runtime version device < <(xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          want = os.environ["WANT_IOS"]
+          runtimes = [r for r in json.load(sys.stdin)["runtimes"]
+                      if r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+                      and r.get("isAvailable")
+                      and (r["version"] == want or r["version"].startswith(want + "."))]
+          if not runtimes:
+              sys.exit(0)
+          runtimes.sort(key=lambda r: tuple(int(x) for x in r["version"].split(".")))
+          runtime = runtimes[-1]
+          iphones = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
+                     if d.get("productFamily") == "iPhone"]
+          prefix = "com.apple.CoreSimulator.SimDeviceType."
+          device = next((prefix + name for name in ["iPhone-17-Pro", "iPhone-17", "iPhone-16-Pro", "iPhone-16",
+                                                    "iPhone-15-Pro", "iPhone-15"]
+                         if prefix + name in iphones), iphones[-1] if iphones else "")
+          print(runtime["identifier"], runtime["version"], device)
+          ') || true
+          if [ -z "${runtime:-}" ] || [ -z "${device:-}" ]; then
+            echo "No usable iOS $WANT_IOS runtime or iPhone device type"
+            xcrun simctl list runtimes
+            xcrun simctl list devicetypes
+            exit 1
+          fi
+          echo "Runtime $runtime ($version) on $device" | tee -a "$OUT/runner.txt"
+          udid=$(xcrun simctl create menu-probe "$device" "$runtime")
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          # The first keyboard on a new simulator shows a slide-to-type introduction.
+          xcrun simctl spawn "$udid" defaults write com.apple.keyboard.preferences \
+            DidShowContinuousPathIntroduction -bool true
+          xcrun simctl status_bar "$udid" override --time 9:41 || true
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          echo "IOS_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Install and launch the app once
+        run: |
+          xcrun simctl install "$UDID" "$APP_PATH"
+          xcrun simctl launch "$UDID" "$APP_ID" 2>&1 | tee "$OUT/first-launch.txt"
+          # The first frame of a debug build can take a while.
+          sleep 20
+          mkdir -p "$OUT/screens"
+          xcrun simctl io "$UDID" screenshot "$OUT/screens/first-launch.png" || true
+          xcrun simctl terminate "$UDID" "$APP_ID" || true
+
+      - name: Run the menu tests
+        run: |
+          xcrun simctl io "$UDID" recordVideo --codec=h264 --force "$OUT/recording.mp4" \
+            > "$OUT/record.log" 2>&1 &
+          recorder=$!
+          status=0
+          # TEST_RUNNER_ variables reach the UI test runner without the prefix.
+          # Only the Flutter test class runs; the scheme also builds the UIKit
+          # probe app that the test target depends on, which these tests do
+          # not use. A scenario can take minutes, so the time allowance is wide.
+          TEST_RUNNER_PROBE_OUT="$OUT" TEST_RUNNER_FLUTTER_APP_BUNDLE_ID="$APP_ID" xcodebuild test \
+            -project MenuProbe.xcodeproj \
+            -scheme MenuProbe \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -resultBundlePath "$OUT/FlutterMenu.xcresult" \
+            -only-testing:MenuProbeUITests/FlutterMenuUITests \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 900 \
+            -maximum-test-execution-time-allowance 1800 \
+            CODE_SIGN_IDENTITY=- \
+            > "$OUT/xcodebuild.log" 2>&1 || status=$?
+          kill -INT "$recorder" || true
+          wait "$recorder" || true
+          grep -E "Test Case|error:|failed|passed|\*\*" "$OUT/xcodebuild.log" | tail -120 || true
+          echo "xcodebuild exit status $status"
+          exit "$status"
+
+      - name: Collect app log and app files
+        if: always()
+        run: |
+          if [ -n "${UDID:-}" ] && [ -n "${APP_ID:-}" ]; then
+            # The Flutter app's executable is called Runner.
+            xcrun simctl spawn "$UDID" log show --style syslog --info --debug --last 3h \
+              --predicate 'process == "Runner"' > "$OUT/app-log.txt" 2>&1 || true
+            container=$(xcrun simctl get_app_container "$UDID" "$APP_ID" data 2>/dev/null || true)
+            if [ -n "$container" ] && [ -d "$container/Documents" ]; then
+              cp -R "$container/Documents" "$OUT/app-documents"
+            fi
+          fi
+          if [ -d "$OUT/FlutterMenu.xcresult" ]; then
+            xcrun xcresulttool export attachments --path "$OUT/FlutterMenu.xcresult" \
+              --output-path "$OUT/attachments" > "$OUT/attachments-export.log" 2>&1 || true
+            xcrun xcresulttool get test-results summary --path "$OUT/FlutterMenu.xcresult" \
+              > "$OUT/test-summary.json" 2>&1 || true
+          fi
+          ls -R "$OUT" > "$OUT/files.txt" 2>&1 || true
+          head -400 "$OUT/files.txt"
+
+      - name: Write the job summary
+        if: always()
+        run: |
+          {
+            echo "## iOS ${IOS_VERSION:-$WANT_IOS}, Xcode $WANT_XCODE, $ARTIFACT_NAME"
+            echo '```'
+            cat "$OUT/runner.txt" 2>/dev/null | grep -E "^label=|^flutter_ref|^engine_run_id|^prebuilt|^selected|^Xcode [0-9]|^Runtime" || true
+            cat "$OUT/engine.txt" 2>/dev/null || echo "(no custom engine)"
+            echo '```'
+            echo "### summary.txt"
+            echo '```'
+            head -c 400000 "$OUT/summary.txt" 2>/dev/null || echo "(no summary.txt)"
+            echo '```'
+            echo "### The app's log (Documents/menu_probe_log.txt), last 60 lines"
+            echo '```'
+            tail -n 60 "$OUT/app-documents/menu_probe_log.txt" 2>/dev/null || echo "(no app log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: out
+          if-no-files-found: warn
