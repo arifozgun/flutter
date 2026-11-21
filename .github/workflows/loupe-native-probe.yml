@@ -1,0 +1,240 @@
+# Runs the native text loupe probe on iOS simulators: builds the UIKit probe
+# app, runs its UI test once per case, records the screen for the whole run,
+# and uploads the recording, the per-case JSON results, the app log, the
+# screenshots and the xcresult bundle, also when a test fails. See README.md
+# for how to read them.
+#
+# Each job pairs an iOS version with the Xcode that matches it: the newest
+# Xcode 26 for iOS 26, and Xcode 16 for iOS 18.6 and 17.5 (newer Xcodes can no
+# longer download those runtimes). A job downloads a runtime only if the image
+# does not have it.
+name: Native loupe probe
+
+on:
+  push:
+    branches: ['speakblend/loupe-native-probe']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Xcode ${{ matrix.xcode }} iOS ${{ matrix.ios }}
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - ios: '26'
+            xcode: '26'
+          - ios: '18.6'
+            xcode: '16'
+          - ios: '17.5'
+            xcode: '16'
+    env:
+      WANT_XCODE: ${{ matrix.xcode }}
+      WANT_IOS: ${{ matrix.ios }}
+      OUT: ${{ github.workspace }}/out
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          mkdir -p "$OUT"
+          # The newest installed release of the wanted major version, so that
+          # a patch version dropped from the image does not break the job.
+          xcode=$(python3 - <<'PY'
+          import glob, os, re
+          want = int(os.environ["WANT_XCODE"])
+          found = {}
+          for path in glob.glob("/Applications/Xcode_*.app"):
+              m = re.match(r"Xcode_(\d+(?:\.\d+)*)(.*)\.app$", os.path.basename(path))
+              if not m:
+                  continue
+              version = tuple(int(x) for x in m.group(1).split("."))
+              if version[0] != want:
+                  continue
+              beta = "beta" in m.group(2).lower() or "rc" in m.group(2).lower()
+              real = os.path.realpath(path)
+              # Prefer releases over betas, then the highest version.
+              key = (0 if beta else 1, version)
+              if real not in found or key > found[real][0]:
+                  found[real] = (key, path)
+          if found:
+              print(max(found.values())[1])
+          PY
+          )
+          if [ -z "$xcode" ]; then
+            echo "No Xcode $WANT_XCODE on this image"
+            ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode"
+          {
+            echo "runner=macos-15 want xcode=$WANT_XCODE ios=$WANT_IOS"
+            sw_vers
+            echo "selected $xcode"
+            xcodebuild -version
+            xcrun simctl list runtimes
+            df -h /
+          } 2>&1 | tee "$OUT/runner.txt"
+
+      - name: Download the iOS runtime
+        run: |
+          # WANT_IOS is a full version (17.5) or a major one (26), which matches
+          # the newest 26.x runtime that the Xcode brings.
+          if xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          wanted = os.environ["WANT_IOS"]
+          sys.exit(0 if any(
+              r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+              and r.get("isAvailable")
+              and (r["version"] == wanted or r["version"].startswith(wanted + "."))
+              for r in json.load(sys.stdin)["runtimes"]) else 1)
+          '; then
+            echo "iOS $WANT_IOS is already installed"
+            exit 0
+          fi
+          # Apple's download server sometimes drops the connection.
+          for attempt in 1 2 3; do
+            xcodebuild -downloadPlatform iOS -buildVersion "$WANT_IOS" && break
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            sleep 30
+          done
+          xcrun simctl list runtimes
+          df -h /
+
+      - name: Create and boot the simulator
+        run: |
+          read -r runtime version device < <(xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          wanted = os.environ["WANT_IOS"]
+          runtimes = [r for r in json.load(sys.stdin)["runtimes"]
+                      if r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+                      and r.get("isAvailable")
+                      and (r["version"] == wanted or r["version"].startswith(wanted + "."))]
+          if not runtimes:
+              sys.exit(0)
+          runtimes.sort(key=lambda r: tuple(int(x) for x in r["version"].split(".")))
+          runtime = runtimes[-1]
+          iphones = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
+                     if d.get("productFamily") == "iPhone"]
+          prefix = "com.apple.CoreSimulator.SimDeviceType."
+          device = next((prefix + name for name in ["iPhone-17-Pro", "iPhone-16-Pro", "iPhone-15-Pro", "iPhone-15"]
+                         if prefix + name in iphones), iphones[-1] if iphones else "")
+          print(runtime["identifier"], runtime["version"], device)
+          ') || true
+          if [ -z "${runtime:-}" ] || [ -z "${device:-}" ]; then
+            echo "No usable iOS $WANT_IOS runtime or iPhone device type"
+            xcrun simctl list runtimes
+            xcrun simctl list devicetypes
+            exit 1
+          fi
+          echo "Runtime $runtime ($version) on $device" | tee -a "$OUT/runner.txt"
+          udid=$(xcrun simctl create loupe-probe "$device" "$runtime")
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          # The first keyboard on a new simulator shows a slide-to-type introduction.
+          xcrun simctl spawn "$udid" defaults write com.apple.keyboard.preferences \
+            DidShowContinuousPathIntroduction -bool true
+          xcrun simctl status_bar "$udid" override --time 9:41 || true
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          echo "IOS_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Build for testing
+        run: |
+          xcodebuild build-for-testing \
+            -project LoupeProbe.xcodeproj \
+            -scheme LoupeProbe \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            CODE_SIGN_IDENTITY=- \
+            > "$OUT/xcodebuild-build.log" 2>&1 || { status=$?; tail -60 "$OUT/xcodebuild-build.log"; exit "$status"; }
+          grep -E "warning:|error:|BUILD" "$OUT/xcodebuild-build.log" | sort -u | head -40 || true
+
+      - name: Run the probe
+        run: |
+          mkdir -p "$OUT/shots"
+          # The recording and the timed screenshots cover the whole run.
+          python3 -c 'import time; print("recording_started_epoch_ms=%d" % (time.time() * 1000))' | tee -a "$OUT/runner.txt"
+          xcrun simctl io "$UDID" recordVideo --codec=h264 --force "$OUT/recording.mp4" \
+            > "$OUT/record.log" 2>&1 &
+          recorder=$!
+          scripts/shots.sh "$UDID" "$OUT" &
+          shooter=$!
+          status=0
+          # TEST_RUNNER_ variables reach the UI test runner without the prefix;
+          # the test passes PROBE_OUT on to the app.
+          TEST_RUNNER_PROBE_OUT="$OUT" xcodebuild test-without-building \
+            -project LoupeProbe.xcodeproj \
+            -scheme LoupeProbe \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -resultBundlePath "$OUT/LoupeProbe.xcresult" \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 240 \
+            CODE_SIGN_IDENTITY=- \
+            > "$OUT/xcodebuild.log" 2>&1 || status=$?
+          touch "$OUT/.stop-shots"
+          wait "$shooter" || true
+          rm -f "$OUT/.stop-shots" "$OUT/shoot-now"
+          sleep 2
+          kill -INT "$recorder" || true
+          wait "$recorder" || true
+          grep -E "Test Case|error:|failed|passed|\*\*" "$OUT/xcodebuild.log" | tail -120 || true
+          echo "xcodebuild exit status $status"
+          exit "$status"
+
+      - name: Collect app log and app files
+        if: always()
+        run: |
+          if [ -n "${UDID:-}" ]; then
+            xcrun simctl spawn "$UDID" log show --style syslog --info --debug \
+              --predicate 'subsystem == "dev.probe.nativeloupe"' > "$OUT/app-log.txt" 2>&1 || true
+            container=$(xcrun simctl get_app_container "$UDID" dev.probe.nativeloupe data 2>/dev/null || true)
+            if [ -n "$container" ] && [ -d "$container/Documents" ]; then
+              cp -R "$container/Documents" "$OUT/app-documents"
+            fi
+          fi
+          if [ -d "$OUT/LoupeProbe.xcresult" ]; then
+            xcrun xcresulttool export attachments --path "$OUT/LoupeProbe.xcresult" \
+              --output-path "$OUT/attachments" > "$OUT/attachments-export.log" 2>&1 || true
+            xcrun xcresulttool get test-results summary --path "$OUT/LoupeProbe.xcresult" \
+              > "$OUT/test-summary.json" 2>&1 || true
+          fi
+          # Still frames of the recording, one per second, when ffmpeg is there.
+          if [ -s "$OUT/recording.mp4" ] && command -v ffmpeg > /dev/null; then
+            mkdir -p "$OUT/frames"
+            ffmpeg -hide_banner -loglevel error -i "$OUT/recording.mp4" -vf fps=1 "$OUT/frames/frame-%04d.jpg" \
+              || echo "ffmpeg failed"
+          fi
+          ls -R "$OUT" > "$OUT/files.txt" 2>&1 || true
+          head -300 "$OUT/files.txt"
+
+      - name: Write the job summary
+        if: always()
+        run: |
+          {
+            echo "## Xcode $WANT_XCODE, iOS ${IOS_VERSION:-?}"
+            echo '```'
+            grep -E "^selected|^Xcode [0-9]|^Runtime" "$OUT/runner.txt" || true
+            echo '```'
+            python3 scripts/summarize.py "$OUT" || echo "(summary failed)"
+            echo
+            echo "### summary.txt (UI test, one line per case)"
+            echo '```'
+            cut -c1-600 "$OUT/summary.txt" 2>/dev/null || echo "(no summary.txt)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loupe-native-probe-xcode${{ matrix.xcode }}-ios${{ matrix.ios }}
+          path: out
+          if-no-files-found: warn

@@ -1,0 +1,362 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		BB0000000000000000000100 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000200 /* AppDelegate.swift */; };
+		BB0000000000000000000101 /* Cases.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000201 /* Cases.swift */; };
+		BB0000000000000000000102 /* ProbeLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000202 /* ProbeLog.swift */; };
+		BB0000000000000000000103 /* HierarchyScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000203 /* HierarchyScanner.swift */; };
+		BB0000000000000000000104 /* ProbeCaseViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000204 /* ProbeCaseViewController.swift */; };
+		BB0000000000000000000105 /* NativeCaseViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000205 /* NativeCaseViewController.swift */; };
+		BB0000000000000000000106 /* SessionCaseViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000206 /* SessionCaseViewController.swift */; };
+		BB0000000000000000000150 /* LoupeProbeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000260 /* LoupeProbeUITests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		BB0000000000000000000600 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BB0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB0000000000000000000500;
+			remoteInfo = LoupeProbe;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		BB0000000000000000000200 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		BB0000000000000000000201 /* Cases.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Cases.swift; sourceTree = "<group>"; };
+		BB0000000000000000000202 /* ProbeLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeLog.swift; sourceTree = "<group>"; };
+		BB0000000000000000000203 /* HierarchyScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HierarchyScanner.swift; sourceTree = "<group>"; };
+		BB0000000000000000000204 /* ProbeCaseViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProbeCaseViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000205 /* NativeCaseViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCaseViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000206 /* SessionCaseViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCaseViewController.swift; sourceTree = "<group>"; };
+		BB0000000000000000000250 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB0000000000000000000260 /* LoupeProbeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoupeProbeUITests.swift; sourceTree = "<group>"; };
+		BB0000000000000000000270 /* LoupeProbe.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LoupeProbe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB0000000000000000000271 /* LoupeProbeUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LoupeProbeUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		BB0000000000000000000400 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000401 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		BB0000000000000000000300 = {
+			isa = PBXGroup;
+			children = (
+				BB0000000000000000000301 /* LoupeProbe */,
+				BB0000000000000000000302 /* LoupeProbeUITests */,
+				BB0000000000000000000303 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		BB0000000000000000000301 /* LoupeProbe */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000000000000000000200 /* AppDelegate.swift */,
+				BB0000000000000000000201 /* Cases.swift */,
+				BB0000000000000000000202 /* ProbeLog.swift */,
+				BB0000000000000000000203 /* HierarchyScanner.swift */,
+				BB0000000000000000000204 /* ProbeCaseViewController.swift */,
+				BB0000000000000000000205 /* NativeCaseViewController.swift */,
+				BB0000000000000000000206 /* SessionCaseViewController.swift */,
+				BB0000000000000000000250 /* Info.plist */,
+			);
+			path = LoupeProbe;
+			sourceTree = "<group>";
+		};
+		BB0000000000000000000302 /* LoupeProbeUITests */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000000000000000000260 /* LoupeProbeUITests.swift */,
+			);
+			path = LoupeProbeUITests;
+			sourceTree = "<group>";
+		};
+		BB0000000000000000000303 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				BB0000000000000000000270 /* LoupeProbe.app */,
+				BB0000000000000000000271 /* LoupeProbeUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		BB0000000000000000000500 /* LoupeProbe */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB0000000000000000000801 /* Build configuration list for PBXNativeTarget "LoupeProbe" */;
+			buildPhases = (
+				BB0000000000000000000700 /* Sources */,
+				BB0000000000000000000400 /* Frameworks */,
+				BB0000000000000000000702 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = LoupeProbe;
+			productName = LoupeProbe;
+			productReference = BB0000000000000000000270 /* LoupeProbe.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BB0000000000000000000501 /* LoupeProbeUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB0000000000000000000802 /* Build configuration list for PBXNativeTarget "LoupeProbeUITests" */;
+			buildPhases = (
+				BB0000000000000000000701 /* Sources */,
+				BB0000000000000000000401 /* Frameworks */,
+				BB0000000000000000000703 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB0000000000000000000610 /* PBXTargetDependency */,
+			);
+			name = LoupeProbeUITests;
+			productName = LoupeProbeUITests;
+			productReference = BB0000000000000000000271 /* LoupeProbeUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		BB0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2600;
+				LastUpgradeCheck = 2600;
+				TargetAttributes = {
+					BB0000000000000000000500 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					BB0000000000000000000501 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = BB0000000000000000000500;
+					};
+				};
+			};
+			buildConfigurationList = BB0000000000000000000800 /* Build configuration list for PBXProject "LoupeProbe" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = BB0000000000000000000300;
+			productRefGroup = BB0000000000000000000303 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				BB0000000000000000000500 /* LoupeProbe */,
+				BB0000000000000000000501 /* LoupeProbeUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		BB0000000000000000000702 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000703 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		BB0000000000000000000700 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000100 /* AppDelegate.swift in Sources */,
+				BB0000000000000000000101 /* Cases.swift in Sources */,
+				BB0000000000000000000102 /* ProbeLog.swift in Sources */,
+				BB0000000000000000000103 /* HierarchyScanner.swift in Sources */,
+				BB0000000000000000000104 /* ProbeCaseViewController.swift in Sources */,
+				BB0000000000000000000105 /* NativeCaseViewController.swift in Sources */,
+				BB0000000000000000000106 /* SessionCaseViewController.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BB0000000000000000000701 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000150 /* LoupeProbeUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		BB0000000000000000000610 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB0000000000000000000500 /* LoupeProbe */;
+			targetProxy = BB0000000000000000000600 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		BB0000000000000000000900 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				ONLY_ACTIVE_ARCH = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		BB0000000000000000000901 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		BB0000000000000000000902 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LoupeProbe/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.probe.nativeloupe;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Debug;
+		};
+		BB0000000000000000000903 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = LoupeProbe/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.probe.nativeloupe;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+			};
+			name = Release;
+		};
+		BB0000000000000000000904 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.probe.nativeloupe.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_TARGET_NAME = LoupeProbe;
+			};
+			name = Debug;
+		};
+		BB0000000000000000000905 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = dev.probe.nativeloupe.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TEST_TARGET_NAME = LoupeProbe;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		BB0000000000000000000800 /* Build configuration list for PBXProject "LoupeProbe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB0000000000000000000900 /* Debug */,
+				BB0000000000000000000901 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB0000000000000000000801 /* Build configuration list for PBXNativeTarget "LoupeProbe" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB0000000000000000000902 /* Debug */,
+				BB0000000000000000000903 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		BB0000000000000000000802 /* Build configuration list for PBXNativeTarget "LoupeProbeUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB0000000000000000000904 /* Debug */,
+				BB0000000000000000000905 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = BB0000000000000000000001 /* Project object */;
+}
