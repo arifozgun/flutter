@@ -812,6 +812,36 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
 - (BOOL)resignFirstResponderFromFramework;
 @end
 
+// The UIResponderStandardEditActions selector of an edit item type, or NULL for other types.
+static SEL StandardEditActionForEditMenuItemType(NSString* type) {
+  if ([type isEqualToString:@"cut"]) {
+    return @selector(cut:);
+  } else if ([type isEqualToString:@"copy"]) {
+    return @selector(copy:);
+  } else if ([type isEqualToString:@"paste"]) {
+    return @selector(paste:);
+  } else if ([type isEqualToString:@"delete"]) {
+    return @selector(delete:);
+  } else if ([type isEqualToString:@"selectAll"]) {
+    return @selector(selectAll:);
+  } else if ([type isEqualToString:@"captureTextFromCamera"]) {
+    return @selector(captureTextFromCamera:);
+  }
+  return NULL;
+}
+
+// Whether the items may be shown with rows from UIKit's lookup or share groups.
+static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
+  for (NSDictionary<NSString*, id>* encodedItem in items) {
+    NSString* type = encodedItem[@"type"];
+    if ([type isEqualToString:@"lookUp"] || [type isEqualToString:@"translate"] ||
+        [type isEqualToString:@"share"]) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
 @implementation FlutterTextInputView {
   int _textInputClient;
   const char* _selectionAffinity;
@@ -834,6 +864,13 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
   // input state.
   BOOL _shouldNotifyFrameworkOnFirstResponderRestore;
   UITextInteraction* _textInteraction API_AVAILABLE(ios(13.0));
+  // Attached only while a system edit menu that may hold UIKit's Look Up, Translate or Share rows
+  // is shown. UIKit only offers these rows to a view with a text interaction, and validates them
+  // again when one is tapped.
+  UITextInteraction* _editMenuTextInteraction API_AVAILABLE(ios(13.0));
+  // Counts edit menu presentations. Each presentation uses it as its configuration identifier, so
+  // that the dismissal of an older menu does not detach the interaction a newer menu relies on.
+  NSUInteger _editMenuPresentationCount;
 }
 
 @synthesize tokenizer = _tokenizer;
@@ -969,6 +1006,9 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
   if (!_editMenuItems) {
     return suggestedMenu;
   }
+  if ([self usesSystemEditMenuGroups]) {
+    return [self systemGroupedEditMenuWithSuggestedMenu:suggestedMenu];
+  }
 
   NSMutableArray* items = [NSMutableArray array];
   for (NSDictionary<NSString*, id>* encodedItem in _editMenuItems) {
@@ -1028,23 +1068,8 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
                                    encodedItem:encodedItem];
       }
     } else if ([type isEqualToString:@"custom"]) {
-      NSString* callbackId = encodedItem[@"id"];
-      NSString* title = encodedItem[@"title"];
-      if (callbackId && title) {
-        __weak FlutterTextInputView* weakSelf = self;
-        UIAction* action = [UIAction
-            actionWithTitle:title
-                      image:nil
-                 identifier:nil
-                    handler:^(__kindof UIAction* _Nonnull action) {
-                      FlutterTextInputView* strongSelf = weakSelf;
-                      if (strongSelf) {
-                        [strongSelf.textInputDelegate flutterTextInputView:strongSelf
-                                performContextMenuCustomActionWithActionID:callbackId
-                                                           textInputClient:strongSelf->
-                                                                           _textInputClient];
-                      }
-                    }];
+      UIAction* action = [self customActionWithEncodedItem:encodedItem];
+      if (action) {
         [items addObject:action];
       }
     }
@@ -1052,10 +1077,219 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
   return [UIMenu menuWithChildren:items];
 }
 
+// Whether the edit menu is built from UIKit's own menu groups, so that the system entries keep
+// the titles, icons and layout iOS gives them. Earlier versions get a flat list of commands.
+- (BOOL)usesSystemEditMenuGroups {
+  if (@available(iOS 17.0, *)) {
+    return YES;
+  }
+  return NO;
+}
+
+// DFS algorithm to search a UIMenu with the given identifier from the menu tree.
+- (UIMenu*)searchMenuWithIdentifier:(UIMenuIdentifier)identifier
+                            element:(UIMenuElement*)element API_AVAILABLE(ios(16.0)) {
+  if (![element isKindOfClass:UIMenu.class]) {
+    return nil;
+  }
+  UIMenu* menu = (UIMenu*)element;
+  if ([menu.identifier isEqualToString:identifier]) {
+    return menu;
+  }
+  for (UIMenuElement* child in menu.children) {
+    UIMenu* result = [self searchMenuWithIdentifier:identifier element:child];
+    if (result) {
+      return result;
+    }
+  }
+  return nil;
+}
+
+- (UIAction*)customActionWithEncodedItem:(NSDictionary<NSString*, id>*)encodedItem
+    API_AVAILABLE(ios(16.0)) {
+  NSString* callbackId = encodedItem[@"id"];
+  NSString* title = encodedItem[@"title"];
+  if (!callbackId || !title) {
+    return nil;
+  }
+  __weak FlutterTextInputView* weakSelf = self;
+  return [UIAction
+      actionWithTitle:title
+                image:nil
+           identifier:nil
+              handler:^(__kindof UIAction* _Nonnull action) {
+                FlutterTextInputView* strongSelf = weakSelf;
+                if (strongSelf) {
+                  [strongSelf.textInputDelegate flutterTextInputView:strongSelf
+                          performContextMenuCustomActionWithActionID:callbackId
+                                                     textInputClient:strongSelf->_textInputClient];
+                }
+              }];
+}
+
+// Builds the menu from UIKit's own groups, in the order of the framework's items:
+//  * Edit items become one copy of the suggested UIMenuStandardEdit group, placed at the first of
+//    them. It holds only system commands, since anything else breaks its row of icons.
+//  * lookUp and translate become the suggested UIMenuLookup group, placed once at the first of
+//    them. Its rows cannot be told apart with public API, so iOS decides which of them it shows.
+//  * share becomes the suggested UIMenuShare group.
+//  * searchWeb is never suggested to this view, so it stays an engine command. It goes at the end
+//    of the lookup group, where iOS places it in its own text views, or in its own group otherwise.
+//  * Consecutive custom items share one inline group.
+// The engine commands are used for lookUp, translate and share when UIKit suggests no such group.
+- (UIMenu*)systemGroupedEditMenuWithSuggestedMenu:(UIMenu*)suggestedMenu API_AVAILABLE(ios(16.0)) {
+  NSMutableArray<UIMenuElement*>* editCommands = [NSMutableArray array];
+  NSMutableArray<UIMenuElement*>* searchWebCommands = [NSMutableArray array];
+  BOOL hasLookUpItem = NO;
+  BOOL hasShareItem = NO;
+  for (NSDictionary<NSString*, id>* encodedItem in _editMenuItems) {
+    NSString* type = encodedItem[@"type"];
+    SEL editAction = StandardEditActionForEditMenuItemType(type);
+    if (editAction) {
+      [self addBasicEditingCommandToItems:editCommands
+                                     type:type
+                                 selector:editAction
+                            suggestedMenu:suggestedMenu];
+    } else if ([type isEqualToString:@"searchWeb"]) {
+      [self addAdditionalBasicCommandToItems:searchWebCommands
+                                        type:type
+                                    selector:@selector(handleSearchWebAction)
+                                 encodedItem:encodedItem];
+    } else if ([type isEqualToString:@"lookUp"] || [type isEqualToString:@"translate"]) {
+      hasLookUpItem = YES;
+    } else if ([type isEqualToString:@"share"]) {
+      hasShareItem = YES;
+    }
+  }
+
+  UIMenu* editGroup = nil;
+  if (editCommands.count > 0) {
+    UIMenu* standardEditMenu = [self searchMenuWithIdentifier:UIMenuStandardEdit
+                                                      element:suggestedMenu];
+    editGroup = standardEditMenu ? [standardEditMenu menuByReplacingChildren:editCommands]
+                                 : [UIMenu menuWithTitle:@""
+                                                   image:nil
+                                              identifier:nil
+                                                 options:UIMenuOptionsDisplayInline
+                                                children:editCommands];
+  }
+  UIMenu* lookupGroup =
+      hasLookUpItem ? [self searchMenuWithIdentifier:UIMenuLookup element:suggestedMenu] : nil;
+  if (lookupGroup && searchWebCommands.count > 0) {
+    lookupGroup =
+        [lookupGroup menuByReplacingChildren:[lookupGroup.children
+                                                 arrayByAddingObjectsFromArray:searchWebCommands]];
+  }
+  UIMenu* shareGroup =
+      hasShareItem ? [self searchMenuWithIdentifier:UIMenuShare element:suggestedMenu] : nil;
+
+  NSMutableArray<UIMenuElement*>* children = [NSMutableArray array];
+  NSMutableArray<UIMenuElement*>* customActions = [NSMutableArray array];
+  void (^addPendingCustomActions)(void) = ^{
+    if (customActions.count > 0) {
+      [children addObject:[UIMenu menuWithTitle:@""
+                                          image:nil
+                                     identifier:nil
+                                        options:UIMenuOptionsDisplayInline
+                                       children:[customActions copy]]];
+      [customActions removeAllObjects];
+    }
+  };
+  BOOL addedEditGroup = NO;
+  BOOL addedLookupGroup = NO;
+  BOOL addedShareGroup = NO;
+  BOOL addedSearchWeb = NO;
+  for (NSDictionary<NSString*, id>* encodedItem in _editMenuItems) {
+    NSString* type = encodedItem[@"type"];
+    if (StandardEditActionForEditMenuItemType(type)) {
+      if (!addedEditGroup && editGroup) {
+        addPendingCustomActions();
+        [children addObject:editGroup];
+      }
+      addedEditGroup = YES;
+    } else if ([type isEqualToString:@"lookUp"] || [type isEqualToString:@"translate"]) {
+      if (lookupGroup) {
+        if (!addedLookupGroup) {
+          addPendingCustomActions();
+          [children addObject:lookupGroup];
+          addedLookupGroup = YES;
+        }
+      } else if ([type isEqualToString:@"lookUp"]) {
+        addPendingCustomActions();
+        [self addAdditionalBasicCommandToItems:children
+                                          type:type
+                                      selector:@selector(handleLookUpAction)
+                                   encodedItem:encodedItem];
+      } else if (@available(iOS 17.4, *)) {
+        addPendingCustomActions();
+        [self addAdditionalBasicCommandToItems:children
+                                          type:type
+                                      selector:@selector(handleTranslateAction)
+                                   encodedItem:encodedItem];
+      }
+    } else if ([type isEqualToString:@"share"]) {
+      if (shareGroup) {
+        if (!addedShareGroup) {
+          addPendingCustomActions();
+          [children addObject:shareGroup];
+          addedShareGroup = YES;
+        }
+      } else {
+        addPendingCustomActions();
+        [self addAdditionalBasicCommandToItems:children
+                                          type:type
+                                      selector:@selector(handleShareAction)
+                                   encodedItem:encodedItem];
+      }
+    } else if ([type isEqualToString:@"searchWeb"]) {
+      if (!lookupGroup && !addedSearchWeb && searchWebCommands.count > 0) {
+        addPendingCustomActions();
+        [children addObject:[UIMenu menuWithTitle:@""
+                                            image:nil
+                                       identifier:nil
+                                          options:UIMenuOptionsDisplayInline
+                                         children:searchWebCommands]];
+      }
+      addedSearchWeb = YES;
+    } else if ([type isEqualToString:@"custom"]) {
+      UIAction* action = [self customActionWithEncodedItem:encodedItem];
+      if (action) {
+        [customActions addObject:action];
+      }
+    }
+  }
+  addPendingCustomActions();
+  return [UIMenu menuWithChildren:children];
+}
+
+- (void)removeEditMenuTextInteraction {
+  if (_editMenuTextInteraction.view == self) {
+    [self removeInteraction:_editMenuTextInteraction];
+  }
+}
+
+- (void)willMoveToWindow:(UIWindow*)newWindow {
+  // A view removed while its edit menu is shown may never get the dismissal's completion.
+  if (!newWindow) {
+    [self removeEditMenuTextInteraction];
+  }
+  [super willMoveToWindow:newWindow];
+}
+
 - (void)editMenuInteraction:(UIEditMenuInteraction*)interaction
     willDismissMenuForConfiguration:(UIEditMenuConfiguration*)configuration
                            animator:(id<UIEditMenuInteractionAnimating>)animator
     API_AVAILABLE(ios(16.0)) {
+  // A row's action can arrive after this callback (Look Up does), and UIKit validates the row
+  // through the text interaction when it does, so the interaction stays until the menu is gone.
+  id<NSCopying> presentation = configuration.identifier;
+  __weak FlutterTextInputView* weakSelf = self;
+  [animator addCompletion:^{
+    FlutterTextInputView* strongSelf = weakSelf;
+    if (strongSelf && [@(strongSelf->_editMenuPresentationCount) isEqual:presentation]) {
+      [strongSelf removeEditMenuTextInteraction];
+    }
+  }];
   [self.textInputDelegate flutterTextInputView:self
         willDismissEditMenuWithTextInputClient:_textInputClient];
 }
@@ -1069,9 +1303,26 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
                              items:(NSArray<NSDictionary*>*)items API_AVAILABLE(ios(16.0)) {
   _editMenuTargetRect = targetRect;
   _editMenuItems = items;
+  _editMenuPresentationCount++;
+
+  if ([self usesSystemEditMenuGroups] && EditMenuItemsUseSystemTextRows(items)) {
+    // Attached before the menu is built, since UIKit leaves out its lookup and share rows
+    // otherwise.
+    if (!_editMenuTextInteraction) {
+      _editMenuTextInteraction =
+          [UITextInteraction textInteractionForMode:UITextInteractionModeEditable];
+      _editMenuTextInteraction.textInput = self;
+    }
+    if (_editMenuTextInteraction.view != self) {
+      [self addInteraction:_editMenuTextInteraction];
+    }
+  } else {
+    [self removeEditMenuTextInteraction];
+  }
 
   UIEditMenuConfiguration* config =
-      [UIEditMenuConfiguration configurationWithIdentifier:nil sourcePoint:CGPointZero];
+      [UIEditMenuConfiguration configurationWithIdentifier:@(_editMenuPresentationCount)
+                                               sourcePoint:CGPointZero];
   [self.editMenuInteraction presentEditMenuWithConfiguration:config];
 }
 
@@ -1391,6 +1642,9 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
 - (BOOL)resignFirstResponder {
   BOOL wasFirstResponder = self.isFirstResponder;
   BOOL success = [super resignFirstResponder];
+  if (success) {
+    [self removeEditMenuTextInteraction];
+  }
   if (success && !_preventCursorDismissWhenResignFirstResponder) {
     if (wasFirstResponder) {
       _shouldNotifyFrameworkOnFirstResponderRestore =
@@ -1430,6 +1684,8 @@ static BOOL IsSelectionRectBoundaryCloserToPoint(CGPoint point,
     }
     return NO;
   }
+  // Other actions must keep falling through to super: UIKit's own Look Up, Translate and Share
+  // rows in the edit menu are validated here.
   return [super canPerformAction:action withSender:sender];
 }
 
