@@ -665,3 +665,98 @@ before the final change), `-menus.txt` and `-result.txt`. Screenshots:
 - The test reads the prediction bar through accessibility right after typing;
   whether that changes anything for the keyboard is not known (every variant
   does the same).
+
+# Look Up harness
+
+A fourth harness, in the UIKit probe app, for one question. A Flutter engine
+prototype attaches a `UITextInteraction` to its custom `UITextInput` view only
+while an edit menu is shown, returns UIKit's suggested Look Up group, and
+removes the interaction when the menu's dismissal animation completes. With it,
+when Look Up is closed UIKit makes the view first responder again on iPhone
+(iOS 17.5, 18.6, 26, 27) and on iPad iOS 18.6 and 26, but not on iPad iOS 17.5.
+Is "no first responder after closing Look Up on iPad iOS 17.5" what UIKit does
+for its own text views too, or only for a custom view in the prototype's
+situation?
+
+`MenuProbeUITests/LookUpProbeUITests.swift`, a class in the existing UI test
+target (`menu-probe.yml` skips it); the app side is `LookUpInputView.swift` and
+`LookUpViewController.swift` (launch argument `-luVariant <id>`).
+
+## Variants
+
+Each shows "The quiet harbor sailed away", makes the view first responder
+(keyboard up), selects "harbor" so that the edit menu appears, taps Look Up
+(behind the chevron when it has to), waits until the Look Up UI is on screen,
+closes it and reads the state 0.5 s, 2 s and 5 s later.
+
+| Test | Variant | The view and its menu |
+| --- | --- | --- |
+| `test_01_textview` | `v1-textview` | `UITextView` (reference); the test double taps the word. |
+| `test_02_textfield` | `v2-textfield` | `UITextField` (reference); the test double taps the word. |
+| `test_03_custom_permanent` | `v3-custom-permanent` | The probe's custom view (`ACInputView`, the engine's zero-sized layout) with a `UITextInteraction` attached before it becomes first responder and never removed; the menu is UIKit's suggested one, unchanged. The app selects the word and presents the menu. |
+| `test_04_custom_prototype` | `v4-custom-prototype` | The same view; no interaction normally. One is added right before `presentEditMenu` and removed in the completion of the dismissal animator (`willDismissMenuFor` → `animator.addCompletion`). The keyboard's `inputDelegate` is kept (guarded), as in the prototype. |
+| `test_05_custom_late_removal` | `v5-custom-late-removal` | As v4, but the interaction stays until the view became first responder again (after a resign) or 10 s after the dismissal completed. Tells whether the restore depends on an attached interaction. |
+| `test_06_custom_stock` | `v6-custom-stock` | The same view without any text interaction; the menu has one "Look Up" action that presents `UIReferenceLibraryViewController` for the word (the stock engine's way). |
+
+In every variant the view under test logs each `canBecomeFirstResponder`,
+`becomeFirstResponder` and `resignFirstResponder` call (result, timestamp and,
+for become and resign, the first 25 frames of `Thread.callStackSymbols`) to
+`trees/lu-<id>-responder.txt`. Read the stacks of a run where the responder
+comes back to see what UIKit restores it with.
+
+The test closes the Look Up UI by a tap near the top edge (outside a popover),
+then a downward swipe, then a close button, and records the first that worked.
+`ACInputView` is no longer `final` (the variants subclass it); nothing else of
+the autocorrect harness changed.
+
+## Dispatching a run
+
+```
+gh workflow run look-up-probe.yml --ref speakblend/menu-probe
+gh workflow run look-up-probe.yml --ref speakblend/menu-probe -f ios=17.5 -f device=ipad
+gh workflow run look-up-probe.yml --ref speakblend/menu-probe -f ios=26 -f tests="test_01_textview test_04_custom_prototype"
+```
+
+No inputs = every test on iOS 26, 18.6 and 17.5, each on an iPhone and an iPad
+simulator (six jobs, `macos-15`). `ios` is `all`, `26`, `18.6` or `17.5`;
+`device` is `both`, `iphone` or `ipad`. On an iPad the app is built for both
+families (`TARGETED_DEVICE_FAMILY=1,2`), as in `flutter-menu.yml`. A push of
+the workflow's own file starts a run whose job is skipped; that only registers
+the workflow. Artifact (small: no `.xcresult`, no video):
+`look-up-probe-ios<version>-<iphone|ipad>` with `summary.txt`, `screens/`,
+`trees/` (the app's records), `hierarchy/` (tree dumps when a step failed),
+`app-log.txt`, `runner.txt` and `xcodebuild-tail.txt`.
+
+## Reading the summary
+
+`summary.txt`, one line per variant:
+`lu-<id> | device=<iphone|ipad> | ios=<v> | select=... | beforeMenu=[...] | afterSelect=[...] | menu=[...] | lookUpTapped=<bool> | lookUpOnScreen=<bool> after=<s> via=<marker> | whileOpen=[...] | close=<method> attempts=[...] | s0.5=[...] | s2=[...] | s5=[...] | restored=<bool> | responder=[...] | test=[...]`.
+
+- `s0.5`, `s2`, `s5`: the state at that time after the closing action, in the
+  form `firstResponder=<app> selection=<loc,len> keyboardUI=<on screen, seen
+  by the test> keyboardApp=<keyboard notifications> presented=<class|none>
+  lookUp=<marker still found|none> at=+<real delay>`. `firstResponder` is the
+  view's `isFirstResponder` as the app reports it; `unreadable` means the
+  app's labels could not be read (something covers it).
+- `close=tapOutside|swipeDown|closeButton|none`: the first way that made the
+  Look Up UI go away; `attempts` lists every one tried.
+- `restored`: `firstResponder` at 5 s.
+- `responder=[...]`: every become/resign call, `become=true@+3.20` being 3.2 s
+  after the Look Up tap, and how often `canBecomeFirstResponder` was asked.
+- `lookUpTapped=false`: Look Up was not in the menu (`menu=[...]` lists what
+  each chevron step showed); `hierarchy/` has the tree.
+
+The job summary repeats one short line per variant. The app's own state
+timeline is `trees/lu-<id>-state.txt` (a line on every change, 0.1 s
+resolution), the menus UIKit built are in `-menus.txt`.
+
+## Limits
+
+- The Look Up UI is found by accessibility markers (a sheet, a popover, a
+  navigation bar, the popover's dismiss region, a Done button); if none shows,
+  `via=ownElementsGone` or `lookUpOnScreen=false` says so. A tap outside on
+  an iPhone may fall through to the app's own screen; it changes nothing.
+- The test reads the app's labels, which a modal sheet may hide from
+  accessibility: `firstResponder=unreadable` while the sheet is open is normal.
+  The state timeline in `trees/` does not depend on that.
+- `ACInputView` is not the engine's view (no Flutter view behind it).

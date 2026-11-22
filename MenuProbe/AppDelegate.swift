@@ -93,6 +93,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         options connectionOptions: UIScene.ConnectionOptions
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
+        // `-luVariant <id>`: the Look Up harness.
+        if let id = UserDefaults.standard.string(forKey: "luVariant"), let luVariant = LUVariant.named(id) {
+            Probe.tag = "lu-\(luVariant.id)"
+            Probe.event("launch \(Probe.tag) iOS \(UIDevice.current.systemVersion)")
+            let window = UIWindow(windowScene: windowScene)
+            window.rootViewController = LookUpViewController(variant: luVariant)
+            window.makeKeyAndVisible()
+            self.window = window
+            return
+        }
         // `-acVariant <id>`: the autocorrect harness instead of a menu variant.
         if let id = UserDefaults.standard.string(forKey: "acVariant"), let acVariant = ACVariant.named(id) {
             Probe.tag = "ac-\(acVariant.id)"

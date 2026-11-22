@@ -21,6 +21,9 @@
 		AA0000000000000000000122 /* AutocorrectVariants.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000232 /* AutocorrectVariants.swift */; };
 		AA0000000000000000000123 /* AutocorrectViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000233 /* AutocorrectViewController.swift */; };
 		AA0000000000000000000124 /* AutocorrectProbeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000234 /* AutocorrectProbeUITests.swift */; };
+		AA0000000000000000000125 /* LookUpInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000235 /* LookUpInputView.swift */; };
+		AA0000000000000000000126 /* LookUpViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000236 /* LookUpViewController.swift */; };
+		AA0000000000000000000127 /* LookUpProbeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000237 /* LookUpProbeUITests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -51,6 +54,9 @@
 		AA0000000000000000000232 /* AutocorrectVariants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutocorrectVariants.swift; sourceTree = "<group>"; };
 		AA0000000000000000000233 /* AutocorrectViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutocorrectViewController.swift; sourceTree = "<group>"; };
 		AA0000000000000000000234 /* AutocorrectProbeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutocorrectProbeUITests.swift; sourceTree = "<group>"; };
+		AA0000000000000000000235 /* LookUpInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookUpInputView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000236 /* LookUpViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookUpViewController.swift; sourceTree = "<group>"; };
+		AA0000000000000000000237 /* LookUpProbeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookUpProbeUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -94,6 +100,8 @@
 				AA0000000000000000000231 /* AutocorrectInputView.swift */,
 				AA0000000000000000000232 /* AutocorrectVariants.swift */,
 				AA0000000000000000000233 /* AutocorrectViewController.swift */,
+				AA0000000000000000000235 /* LookUpInputView.swift */,
+				AA0000000000000000000236 /* LookUpViewController.swift */,
 				AA0000000000000000000208 /* Info.plist */,
 			);
 			path = MenuProbe;
@@ -105,6 +113,7 @@
 				AA0000000000000000000211 /* MenuProbeUITests.swift */,
 				AA0000000000000000000212 /* FlutterMenuUITests.swift */,
 				AA0000000000000000000234 /* AutocorrectProbeUITests.swift */,
+				AA0000000000000000000237 /* LookUpProbeUITests.swift */,
 			);
 			path = MenuProbeUITests;
 			sourceTree = "<group>";
@@ -227,6 +236,8 @@
 				AA0000000000000000000121 /* AutocorrectInputView.swift in Sources */,
 				AA0000000000000000000122 /* AutocorrectVariants.swift in Sources */,
 				AA0000000000000000000123 /* AutocorrectViewController.swift in Sources */,
+				AA0000000000000000000125 /* LookUpInputView.swift in Sources */,
+				AA0000000000000000000126 /* LookUpViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -237,6 +248,7 @@
 				AA0000000000000000000111 /* MenuProbeUITests.swift in Sources */,
 				AA0000000000000000000112 /* FlutterMenuUITests.swift in Sources */,
 				AA0000000000000000000124 /* AutocorrectProbeUITests.swift in Sources */,
+				AA0000000000000000000127 /* LookUpProbeUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

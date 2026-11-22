@@ -17,7 +17,7 @@ import UIKit
 /// Every UITextInput call is logged with a timestamp. Calls that change the
 /// text or the selection are also reported through `onEdit` so the
 /// controller can tag them with the step it is in.
-final class ACInputView: UIView, UITextInput, UIEditMenuInteractionDelegate, UITextInteractionDelegate {
+class ACInputView: UIView, UITextInput, UIEditMenuInteractionDelegate, UITextInteractionDelegate {
     enum DelegateHandling: String {
         /// The engine change: assignments made while the edit menu's
         /// interaction is added or removed are ignored.
