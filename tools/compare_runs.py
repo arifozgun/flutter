@@ -5,9 +5,14 @@ Usage: compare_runs.py RUN_A RUN_B [--all]
 
 RUN_A and RUN_B are output folders (each holding a summary.txt) or the
 summary.txt files themselves. For every scenario, the fields that differ are
-printed as `name: A=<value> | B=<value>`. Timestamps (`start=`, `at <time>`)
-and coordinates (`frame=`) are ignored. Scenarios that only one run has are
+printed as `name: A=<value> | B=<value>`. Timestamps (`start=`, `at <time>`,
+the showcase's `clipStart=`, `clipEnd=`, `clipFrom=`, `clipTo=`) and
+coordinates (`frame=`) are ignored. Scenarios that only one run has are
 listed. With --all, scenarios without a difference are listed too.
+
+Scenarios that say they did not exercise their case (`exercised=no`, as the
+IME scenarios do when no IME keyboard was reached) are listed first for each
+run: a missing difference there proves nothing.
 
 Reads files and prints; standard library only.
 """
@@ -35,6 +40,7 @@ def normalise(text):
     text = re.sub(r'frame=-?\d+,-?\d+,\d+x\d+', 'frame=*', text)
     text = re.sub(r'\bat \d{9,}\.\d+', 'at *', text)
     text = re.sub(r'\bstart=\S+', 'start=*', text)
+    text = re.sub(r'\b(clipStart|clipEnd|clipFrom|clipTo)=\S+', r'\1=*', text)
     return text
 
 
@@ -152,6 +158,11 @@ def main():
 
     print(f'A = {label(args.run_a)}')
     print(f'B = {label(args.run_b)}')
+    for name, run in (('A', a), ('B', b)):
+        missed = [scenario for scenario in sorted(run)
+                  if run[scenario].get('exercised', '').startswith('no')]
+        for scenario in missed:
+            print(f'NOT EXERCISED in {name}: {scenario}: exercised={short(run[scenario]["exercised"])}')
     differing = 0
     for scenario in sorted(set(a) | set(b)):
         if scenario not in a or scenario not in b:

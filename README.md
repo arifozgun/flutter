@@ -227,7 +227,16 @@ horizontal, paged bar).
   the tests use to double tap a word.
   The app appends every change, focus change, menu build and custom item press
   to `Documents/menu_probe_log.txt` (dart:io only), so results do not depend on
-  accessibility.
+  accessibility. Every `change` line holds the field's whole
+  `TextEditingValue`: text, selection and composing range.
+  Launched with the environment variable `PROBE_PAGE=sized` (the `sized`
+  scenarios set it), the app shows a second page instead, with one field per
+  configuration that gives the engine's text input view a different frame:
+  `sized-plain` (TextField's default `autofillHints`, an empty list),
+  `sized-nohints` (`autofillHints: null`), `sized-email` (`[email]`), and an
+  `AutofillGroup` with `sized-username` (`[username]`) and `sized-password`
+  (`[password]`, obscured). Each title says which frame it should give; see
+  [The text input view's frame](#the-text-input-views-frame).
 - `MenuProbeUITests/FlutterMenuUITests.swift`: XCUITests that drive that app by
   bundle id (`XCUIApplication(bundleIdentifier:)`). They are a second class in
   the existing UI test target, not a second target: a UI test target needs a
@@ -271,12 +280,37 @@ Inputs:
   exist for it.
 - `label`: goes into the artifact name; default `baseline`, or `engine` when
   `engine_run_id` is set.
+- `scenarios`: which scenarios run, comma separated; default `all`. Groups:
+  `shape`, `rows`, `edit`, `typing`, `cycles`, `selectionChange`,
+  `autocorrect`, `ime`, `sized`, `showcase`; a test method name such as
+  `test_08_ime_c_menuWhileMarked` also works. The tests that are not selected
+  are skipped (`PROBE_SCENARIOS`); an unknown group stops the job before
+  anything is built. Example: `-f scenarios=ime,sized,showcase` runs only the
+  new ones.
+- `device`: `iphone` (default) or `ipad`. The iPad is the one configuration in
+  which the engine gives the text input view the field's own size (Scribble),
+  so `ipad` with `scenarios=sized` (or `all`) tests that case. The artifact
+  name gets `-ipad`.
+- `ios27`: `true` adds an iOS 27 job (newest 27.x runtime, Xcode 27) on the
+  `xcode-27` image; off by default.
 
 The workflow also has a push trigger on its own file; that run skips the job and
 only registers the workflow.
 
-The matrix runs iOS 26 (Xcode 26), 18.6 and 17.5 (Xcode 16), all on `macos-15`.
-The app is a debug simulator build (a simulator build can only be debug).
+The matrix runs iOS 26 (Xcode 26), 18.6 and 17.5 (Xcode 16), all on `macos-15`,
+and with `ios27` also iOS 27 (Xcode 27) on `xcode-27`. That image is GitHub's
+only one with iOS 27 simulator runtimes (27.0 and 27.2 per the runner-images
+README `images/macos/xcode-27-arm64-Readme.md`, image 20261104); the
+runner-images table still marks it "preview" (issue 14404), so the leg is
+opt-in. The app is a debug simulator build (a simulator build can only be
+debug).
+
+When the selection includes `ime` (or `all`), the job adds a Japanese (Romaji,
+`ja_JP-Romaji@sw=QWERTY-Japanese`) and a Chinese (Pinyin,
+`zh_Hans-Pinyin@sw=Pinyin-Simplified`) keyboard to the simulator's
+`AppleKeyboards` after the keyboards it already has, and reboots it. English
+stays the first keyboard; the other scenarios then show a globe key where the
+emoji key was. `runner.txt` holds the keyboard list before and after.
 
 ## Reading the output
 
@@ -319,9 +353,68 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
     Look Up, the sheet closed. D: the menu, Copy. E: `x` typed while the menu is
     shown (`menuGoneAfterTyping=`, the text). Each variant starts from a
     reset. The scenario judges nothing; compare the two runs.
+  - `ime-a` to `ime-d`: marked (composing) text from an IME keyboard in the
+    `single` field. Each first puts the caret at the end of the text and
+    taps the globe key until a probe proves an IME is up (`toIME:`): the
+    probe types `a` and deletes it again, and only an IME leaves the `a`
+    marked (`composing=` with a range, `ime=true`). `imeKeys=` lists the
+    keys of the keyboard it reached (Japanese or Chinese). Then `kana` is
+    composed (`かな` on the Japanese keyboard, `ka na` on the Chinese one) and
+    committed with the return key (`confirm` while text is marked). Every
+    step is a `<step> at <time>: keyboard= menu=[...] status: ...` note with
+    the app's text, selection and composing range; `committed=true` means the
+    text kept what was composed and nothing is marked any more.
+    a: menu cycle (select "harbor", menu, dismiss by a tap), then compose and
+    commit. b: Look Up, its sheet closed, then compose and commit. c: `kana`
+    marked, then a double tap on "quiet" (`c2` after 0.4 s, `c3` after 1.6 s:
+    what happened to the marked text and whether the menu came), then after a
+    reset `kana` marked again and a long press on "harbor" (`c5`, `c6`). d:
+    compose and commit, menu cycle, compose and commit again.
+    **How to tell it really ran:** `exercised=yes markedAt=[...]` names the
+    steps whose value had a composing range. `exercised=no` with
+    `RESULT=ime-unreachable` means no IME keyboard was reached (no globe key,
+    or no keyboard ever gave marked text); then `toIME:`, `imeKeys=`,
+    `screens/ime-<x>-0-keyboard.png`, its hierarchy and the keyboard list in
+    `runner.txt` show why, and the rest of the line proves nothing. A
+    `<step>-retry` note means the first `kana` was not marked (typed as Latin)
+    and the IME was brought up again. `toLatin:` switches back to a Latin
+    keyboard for the scenarios that follow. The app's log has the same values
+    with their times (`change field=single ... composing=a..b`).
+  - `sized-plain`, `sized-nohints`, `sized-email`, `sized-username`: one field
+    of the `sized` page each (`expectedFrame=` says which frame of the text
+    input view it should give, `screen=` the screen size in points, which
+    tells an iPad run). `1`: the word "harbor" selected, `collapsed=[...]`,
+    `all=[...]`, `unrequested=[...]` (rows Flutter's default menu does not
+    ask for, such as Delete or Select: UIKit's own), and the expanded list
+    (iOS 26) or the pages (17/18). Separate lines
+    `<field>-row-lookUp`, `-row-translate`, `-row-share` tap each row as the
+    `rows` scenarios do (`outcome=sheet` when its sheet opened). `3a` to `3d`:
+    from a fresh selection each, with the menu shown: a tap at the end of the
+    same field, a tap in another field, a drag of the end handle 70 points to
+    the right, a double tap on "quiet". After each, `menu=[...]`,
+    `unrequested=[...]`, `foreign=[...]` (menus, popovers, text views or
+    images that are neither the app's elements, the keyboard nor menu rows)
+    and the app's value; a screenshot and a hierarchy dump of every step are
+    in `screens/` and `hierarchy/`. `4`: `xyz` typed at the end
+    (`typedOK=`). UIKit's own cursor and handles are not accessibility
+    elements as far as the probe knows, so the screenshots of the `3x` steps
+    are where they would show; an extra UIKit menu shows in `menu=` and
+    `unrequested=`, and a tap taken by UIKit instead of Flutter shows as a
+    status that does not follow the tap. `exercised=yes` means the word was
+    selected with the menu shown in that field; `RESULT=page-not-shown`
+    means `PROBE_PAGE` did not reach the app.
+  - `showcase`: a slow, clean run for the screen recording: select "harbor",
+    the menu, one chevron tap (expanded list on iOS 26, next page on 17/18),
+    Look Up, its sheet closed, the menu again by a double tap, Copy. About 1.5
+    to 2 s between steps. `clipStart=`/`clipEnd=` are wall-clock times,
+    `clipFrom=`/`clipTo=` the same in seconds into `recording.mp4` (from
+    `recording-start.txt`, which the job writes as it starts the recorder;
+    good to about a second). Cut the clip with, for example,
+    `ffmpeg -ss <clipFrom> -to <clipTo> -i recording.mp4 -c copy showcase.mp4`.
 - `screens/`: `<scenario>-<step>.png`, for example `shape-single-1-collapsed`,
   `shape-single-2-page2`, `shape-single-2-expanded`, `rows-lookUp-single-1-after-tap`,
-  `typing-2c-typed-def`, `cycles-round20`, `selectionChange-2-after-drag`.
+  `typing-2c-typed-def`, `cycles-round20`, `selectionChange-2-after-drag`,
+  `ime-c-c3-doubleTap-1.6s`, `sized-email-3a-tapSameField`.
   `first-launch.png` is the app on its own before the tests.
 - `hierarchy/`: accessibility dumps (type, label, identifier, frame of every
   element plus `debugDescription`) at the collapsed and expanded states, after
@@ -329,7 +422,8 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
 - `app-documents/menu_probe_log.txt`: the app's own log (`t=<epoch s>`, same
   clock as the `start=` and `at` times in `summary.txt`).
 - `app-log.txt`: the simulator's unified log for the app's process.
-- `recording.mp4`: the whole test run.
+- `recording.mp4`: the whole test run; `recording-start.txt` is when the
+  recorder was started (epoch seconds).
 - `engine.txt`: for an engine run the manifest and slice info of the installed
   engine; always the app's bundle id and the checksum of the app's embedded
   `Flutter.framework`. `flutter-version.txt`, `flutter-build.log`, `runner.txt`
@@ -349,8 +443,27 @@ scenario that keeps the text, taps Done and focuses again). `Reset` itself is
 checked (`field=none` in the status) and repeated when a menu swallowed the tap.
 The recovery shows in the `select=` note.
 
-Marked text (a Japanese or Pinyin keyboard on the simulator) is not covered:
-no way to add the keyboard to the CI simulator was verified.
+### The text input view's frame
+
+`FlutterTextInputView` takes a size in these places of the engine's
+`FlutterTextInputPlugin.mm` (line numbers of the prototype this harness was
+written against, commit `21977d0018e`):
+
+| Where | What | Reached by |
+|---|---|---|
+| `initWithFrame:CGRectZero` (881) | every view starts at zero | - |
+| `configureWithDictionary:` (1383) and `setIsVisibleToAutofill:` (1578) | `isVisibleToAutofill = autofill \|\| secureTextEntry`; visible means a 1x1 frame at (0,0), else zero. `autofill` is set whenever the field sends an autofill configuration, which every TextField and CupertinoTextField does by default: their `autofillHints` default is an empty list, not null | `sized-plain`, `sized-email`, `sized-username`, and the main page's `single`, `multi`, `obscured`, `cupertino`, `custom`: 1x1. Only `sized-nohints` (`autofillHints: null`) stays at zero |
+| `AutofillTypeOf` (427) with `IsFieldPasswordRelated` (401), `getOrCreateAutofillableView:` (3392) | a field with hints, or in a group with a password-related field, gets a view kept in the autofill context; password-related ones are `FlutterSecureTextInputView`, which answers `isKindOfClass:[UITextField class]` with YES | `sized-email` (regular), `sized-username` (password group, secure view) |
+| `setTextInputClient:withConfiguration:` (3262) via `changeInputViewsAutofillVisibility:` (3455) | before a new field is focused all views go back to zero, then the new configuration's views get 1x1 | every focus change |
+| `setEditableSizeAndTransform:` (3129) when `isScribbleAvailable` (1588, any iPad on iOS 14+) | the view gets the field's width and height, and its parent (the accessibility hider) the field's origin and size, so it lies over the field and can be hit by taps | `device=ipad`, every field |
+| `setEditableSizeAndTransform:`, iOS 17+ on iPhone (3153) | only the hider moves to the field's origin, with zero size; the 1x1 view inside it cannot be hit by taps, but nothing clips what an interaction draws there | every iPhone run |
+| `triggerAutofillSave:` (3226) | all views in the autofill context go to 1x1 just before they are removed (`TextInput.finishAutofillContext(shouldSave: true)`) | not tested: transient, and no menu is shown then |
+| `clearTextInputClient` (3500) | back to zero | every unfocus |
+
+So on an iPhone the view has a size (1x1) for nearly every field, but sits in a
+zero-sized parent; on an iPad it covers the field. The `sized` scenarios on
+`device=ipad` are the ones where a `UITextInteraction` attached for the menu
+can take taps, as it did in the UIKit probe's visible views (v16, v17).
 
 ## Comparing two runs
 
@@ -361,8 +474,10 @@ python3 tools/compare_runs.py <folder-of-run-A> <folder-of-run-B> [--all]
 Each folder holds a `summary.txt` (for example two downloaded artifacts of the
 same iOS version, a baseline and an engine run). For every scenario the script
 prints the fields that differ, `A=` and `B=` under each field name. `start=`
-times, `at <time>` and the coordinates in `frame=` are ignored; `after 2 s` and
-`after tap` count as the same field. Scenarios only one run has are listed;
+times, `at <time>`, the showcase's `clip...=` times and the coordinates in
+`frame=` are ignored; `after 2 s` and `after tap` count as the same field.
+Scenarios with `exercised=no` are listed first as `NOT EXERCISED in A|B`: a
+missing difference there proves nothing. Scenarios only one run has are listed;
 `--all` also lists the ones without a difference. It reads files and prints,
 nothing else (Python 3, standard library only).
 

@@ -5,9 +5,10 @@
 # it on a simulator, and drives it with the UI tests in
 # MenuProbeUITests/FlutterMenuUITests.swift: menu shape, row taps, edit
 # commands, typing after a menu cycle, 20 menu cycles, selection changes,
-# autocorrection after a menu cycle.
-# Everything is uploaded, also when a test fails. See README.md for how to
-# read it.
+# autocorrection after a menu cycle, marked text from a Japanese or Chinese
+# keyboard, fields whose text input view has a size, and a showcase clip.
+# `scenarios` picks which of them run. Everything is uploaded, also when a
+# test fails. See README.md for how to read it.
 name: Flutter menu probe
 
 on:
@@ -38,6 +39,22 @@ on:
         required: false
         type: string
         default: ''
+      scenarios:
+        description: 'Scenario groups to run, comma separated: shape, rows, edit, typing, cycles, selectionChange, autocorrect, ime, sized, showcase, or test method names; all = every one'
+        required: false
+        type: string
+        default: 'all'
+      device:
+        description: 'Simulator device family; an iPad gives the text input view the field size (Scribble)'
+        required: false
+        type: choice
+        options: [iphone, ipad]
+        default: iphone
+      ios27:
+        description: 'Also run on iOS 27 (newest 27.x runtime of the xcode-27 image)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -46,32 +63,59 @@ permissions:
 jobs:
   probe:
     if: ${{ github.event_name == 'workflow_dispatch' }}
-    name: iOS ${{ matrix.ios }}
-    runs-on: macos-15
-    timeout-minutes: 150
+    name: iOS ${{ matrix.ios }} ${{ inputs.device }}
+    # iOS 27 runtimes exist only on the xcode-27 image (Xcode 27.x, iOS 27.0
+    # and 27.2 simulators); the other versions run on macos-15.
+    runs-on: ${{ matrix.ios == '27' && 'xcode-27' || 'macos-15' }}
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # The vertical menu of iOS 26. Xcode 26 on the image; its newest iOS
-          # 26 runtime was 26.2 in the first runs.
-          - ios: '26'
-            xcode: '26'
-          # The horizontal, paging menu of iOS 16-18. Xcode 16 runs these;
-          # 18.6 comes with the image, 17.5 is downloaded.
-          - ios: '18.6'
-            xcode: '16'
-          - ios: '17.5'
-            xcode: '16'
+        # 26: the vertical menu of iOS 26, Xcode 26 on the image; its newest
+        # iOS 26 runtime was 26.2 in the first runs. 18.6 and 17.5: the
+        # horizontal, paging menu of iOS 16-18, run by Xcode 16; 18.6 comes
+        # with the image, 17.5 is downloaded. 27: only with the ios27 input.
+        ios: ['26', '18.6', '17.5', '27']
+        exclude:
+          - ios: ${{ inputs.ios27 && 'none' || '27' }}
     env:
-      WANT_XCODE: ${{ matrix.xcode }}
+      WANT_XCODE: ${{ matrix.ios == '27' && '27' || matrix.ios == '26' && '26' || '16' }}
       WANT_IOS: ${{ matrix.ios }}
+      WANT_DEVICE: ${{ inputs.device || 'iphone' }}
+      SCENARIOS: ${{ inputs.scenarios || 'all' }}
       OUT: ${{ github.workspace }}/out
       FLUTTER_REF: ${{ inputs.flutter_ref }}
       ENGINE_RUN_ID: ${{ inputs.engine_run_id }}
       PREBUILT_ENGINE_VERSION: ${{ inputs.prebuilt_engine_version }}
       LABEL: ${{ inputs.label }}
     steps:
+      - name: Check the scenario selection
+        run: |
+          # The UI tests skip what is not selected (PROBE_SCENARIOS); a typo
+          # would skip everything, so unknown groups stop the job here.
+          known=" shape rows edit typing cycles selectionChange autocorrect ime sized showcase "
+          keyboards=false
+          tokens=$(printf '%s' "$SCENARIOS" | tr ',' ' ')
+          if [ -z "$(printf '%s' "$tokens" | tr -d ' ')" ]; then
+            keyboards=true
+          fi
+          for token in $tokens; do
+            case "$token" in
+              all|ime|test_08_ime*) keyboards=true ;;
+            esac
+            case "$token" in
+              all|test_[0-9][0-9]_*) ;;
+              *)
+                case "$known" in
+                  *" $token "*) ;;
+                  *) echo "Unknown scenario group '$token'. Known:$known(or all, or a test method name)"; exit 1 ;;
+                esac
+                ;;
+            esac
+          done
+          # The IME scenarios need Japanese and Chinese keyboards on the simulator.
+          echo "IME_KEYBOARDS=$keyboards" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       - uses: actions/checkout@v4
@@ -96,12 +140,15 @@ jobs:
           fi
           # Artifact names cannot hold most punctuation.
           label=$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-')
-          echo "ARTIFACT_NAME=flutter-menu-ios${WANT_IOS}-${label}" >> "$GITHUB_ENV"
+          device=""
+          if [ "$WANT_DEVICE" = ipad ]; then device="-ipad"; fi
+          echo "ARTIFACT_NAME=flutter-menu-ios${WANT_IOS}${device}-${label}" >> "$GITHUB_ENV"
           if [ -n "$PREBUILT_ENGINE_VERSION" ]; then
             echo "FLUTTER_PREBUILT_ENGINE_VERSION=$PREBUILT_ENGINE_VERSION" >> "$GITHUB_ENV"
           fi
           {
-            echo "label=$label want xcode=$WANT_XCODE ios=$WANT_IOS"
+            echo "label=$label want xcode=$WANT_XCODE ios=$WANT_IOS device=$WANT_DEVICE"
+            echo "scenarios=$SCENARIOS ime_keyboards=$IME_KEYBOARDS"
             echo "flutter_ref=$FLUTTER_REF sdk commit=$(git -C flutter rev-parse HEAD)"
             echo "engine_run_id=${ENGINE_RUN_ID:-none (stock engine)}"
             echo "prebuilt_engine_version=${PREBUILT_ENGINE_VERSION:-unset}"
@@ -278,16 +325,19 @@ jobs:
               sys.exit(0)
           runtimes.sort(key=lambda r: tuple(int(x) for x in r["version"].split(".")))
           runtime = runtimes[-1]
+          ipad = os.environ.get("WANT_DEVICE") == "ipad"
           iphones = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
-                     if d.get("productFamily") == "iPhone"]
+                     if d.get("productFamily") == ("iPad" if ipad else "iPhone")]
           prefix = "com.apple.CoreSimulator.SimDeviceType."
-          device = next((prefix + name for name in ["iPhone-17-Pro", "iPhone-17", "iPhone-16-Pro", "iPhone-16",
-                                                    "iPhone-15-Pro", "iPhone-15"]
-                         if prefix + name in iphones), iphones[-1] if iphones else "")
+          names = (["iPad-Air-11-inch-M3", "iPad-Air-11-inch-M4", "iPad-Air-11-inch-M2", "iPad-Pro-11-inch-M5",
+                    "iPad-Pro-11-inch-M4-8GB", "iPad-10th-generation"] if ipad else
+                   ["iPhone-17-Pro", "iPhone-17", "iPhone-16-Pro", "iPhone-16", "iPhone-15-Pro", "iPhone-15"])
+          device = next((prefix + name for name in names if prefix + name in iphones),
+                        iphones[-1] if iphones else "")
           print(runtime["identifier"], runtime["version"], device)
           ') || true
           if [ -z "${runtime:-}" ] || [ -z "${device:-}" ]; then
-            echo "No usable iOS $WANT_IOS runtime or iPhone device type"
+            echo "No usable iOS $WANT_IOS runtime or $WANT_DEVICE device type"
             xcrun simctl list runtimes
             xcrun simctl list devicetypes
             exit 1
@@ -299,6 +349,33 @@ jobs:
           # The first keyboard on a new simulator shows a slide-to-type introduction.
           xcrun simctl spawn "$udid" defaults write com.apple.keyboard.preferences \
             DidShowContinuousPathIntroduction -bool true
+          if [ "$IME_KEYBOARDS" = true ]; then
+            # The IME scenarios switch to a Japanese (Romaji) or Chinese
+            # (Pinyin) keyboard with the globe key. They are added after the
+            # keyboards the simulator already has, so that the first keyboard
+            # stays the same. Keyboards are read when the system starts, hence
+            # the reboot. The lists before and after go to runner.txt.
+            before=$(xcrun simctl spawn "$udid" defaults read -g AppleKeyboards 2>&1 || true)
+            echo "AppleKeyboards before: $before" | tee -a "$OUT/runner.txt"
+            if ! printf '%s' "$before" | grep -q '@sw='; then
+              xcrun simctl spawn "$udid" defaults write -g AppleKeyboards -array \
+                "en_US@sw=QWERTY;hw=Automatic" "emoji@sw=Emoji"
+            fi
+            for keyboard in "ja_JP-Romaji@sw=QWERTY-Japanese;hw=Automatic" \
+                            "zh_Hans-Pinyin@sw=Pinyin-Simplified;hw=Automatic"; do
+              if ! printf '%s' "$before" | grep -qF "${keyboard%%@*}"; then
+                xcrun simctl spawn "$udid" defaults write -g AppleKeyboards -array-add "$keyboard"
+              fi
+            done
+            xcrun simctl spawn "$udid" defaults write -g AppleKeyboardsExpanded -int 1
+            xcrun simctl shutdown "$udid"
+            xcrun simctl boot "$udid"
+            xcrun simctl bootstatus "$udid" -b
+            {
+              echo "AppleKeyboards after the reboot:"
+              xcrun simctl spawn "$udid" defaults read -g AppleKeyboards
+            } 2>&1 | tee -a "$OUT/runner.txt"
+          fi
           xcrun simctl status_bar "$udid" override --time 9:41 || true
           echo "UDID=$udid" >> "$GITHUB_ENV"
           echo "IOS_VERSION=$version" >> "$GITHUB_ENV"
@@ -318,12 +395,20 @@ jobs:
           xcrun simctl io "$UDID" recordVideo --codec=h264 --force "$OUT/recording.mp4" \
             > "$OUT/record.log" 2>&1 &
           recorder=$!
+          # The showcase scenario turns its wall-clock times into offsets in
+          # recording.mp4 with this (to within the recorder's start-up time).
+          python3 -c 'import time; print("%.3f" % time.time())' > "$OUT/recording-start.txt"
+          # An iPhone-only test runner on an iPad would run in compatibility mode.
+          family=()
+          if [ "$WANT_DEVICE" = ipad ]; then family=(TARGETED_DEVICE_FAMILY=1,2); fi
           status=0
           # TEST_RUNNER_ variables reach the UI test runner without the prefix.
+          # Tests that PROBE_SCENARIOS does not select are skipped.
           # Only the Flutter test class runs; the scheme also builds the UIKit
           # probe app that the test target depends on, which these tests do
           # not use. A scenario can take minutes, so the time allowance is wide.
-          TEST_RUNNER_PROBE_OUT="$OUT" TEST_RUNNER_FLUTTER_APP_BUNDLE_ID="$APP_ID" xcodebuild test \
+          TEST_RUNNER_PROBE_OUT="$OUT" TEST_RUNNER_FLUTTER_APP_BUNDLE_ID="$APP_ID" \
+          TEST_RUNNER_PROBE_SCENARIOS="$SCENARIOS" xcodebuild test \
             -project MenuProbe.xcodeproj \
             -scheme MenuProbe \
             -destination "id=$UDID" \
@@ -335,6 +420,7 @@ jobs:
             -default-test-execution-time-allowance 900 \
             -maximum-test-execution-time-allowance 1800 \
             CODE_SIGN_IDENTITY=- \
+            "${family[@]}" \
             > "$OUT/xcodebuild.log" 2>&1 || status=$?
           kill -INT "$recorder" || true
           wait "$recorder" || true
@@ -367,7 +453,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## iOS ${IOS_VERSION:-$WANT_IOS}, Xcode $WANT_XCODE, $ARTIFACT_NAME"
+            echo "## iOS ${IOS_VERSION:-$WANT_IOS} ($WANT_DEVICE), Xcode $WANT_XCODE, $ARTIFACT_NAME, scenarios: $SCENARIOS"
             echo '```'
             cat "$OUT/runner.txt" 2>/dev/null | grep -E "^label=|^flutter_ref|^engine_run_id|^prebuilt|^selected|^Xcode [0-9]|^Runtime" || true
             cat "$OUT/engine.txt" 2>/dev/null || echo "(no custom engine)"

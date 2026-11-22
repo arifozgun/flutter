@@ -12,6 +12,10 @@ import 'package:flutter/semantics.dart';
 /// status area that shows the state of the focused field, and a log file in the
 /// app's Documents folder. The XCUITests in this repository drive it by bundle
 /// id and read the status area through its semantics identifier.
+///
+/// Launched with the environment variable `PROBE_PAGE=sized`, the screen shows
+/// other fields instead: one per autofill configuration that gives the engine's
+/// text input view a different frame (see [_ProbePageState._sizedFields]).
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   // Without this, Flutter only builds its semantics tree when an assistive
@@ -85,6 +89,8 @@ class _Field {
     required this.text,
     this.multiline = false,
     this.obscured = false,
+    this.autofillHints = const <String>[],
+    this.inAutofillGroup = false,
   }) : controller = TextEditingController(text: text),
        focusNode = FocusNode(debugLabel: id);
 
@@ -94,6 +100,14 @@ class _Field {
   final String text;
   final bool multiline;
   final bool obscured;
+
+  /// Passed to the TextField as is. The default is TextField's own default, an
+  /// empty list, which still sends an autofill configuration to the engine;
+  /// null sends none.
+  final List<String>? autofillHints;
+
+  /// Whether the field is inside the page's [AutofillGroup].
+  final bool inAutofillGroup;
   final TextEditingController controller;
   final FocusNode focusNode;
 
@@ -150,11 +164,27 @@ class _ProbePageState extends State<_ProbePage> {
   int _epoch = 0;
   String _lastCustom = '-';
 
+  /// The value of the `PROBE_PAGE` environment variable: `sized` or empty.
+  final String _page = Platform.environment['PROBE_PAGE'] ?? '';
+
   @override
   void initState() {
     super.initState();
-    const sentence = 'The quiet harbor sailed away';
-    _fields = <_Field>[
+    _fields = _page == 'sized' ? _sizedFields() : _mainFields();
+    for (final f in _fields) {
+      f.controller.addListener(() => _onChanged(f));
+      f.focusNode.addListener(() => _onFocus(f));
+    }
+    _log.write('start page=${_page.isEmpty ? 'main' : _page} log=${_log.path}');
+    _timer = Timer.periodic(const Duration(milliseconds: 300), (_) => _refresh());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+  }
+
+  static const String _sentence = 'The quiet harbor sailed away';
+
+  static List<_Field> _mainFields() {
+    const sentence = _sentence;
+    return <_Field>[
       _Field(id: 'single', title: 'Single-line TextField', kind: _Kind.material, text: sentence),
       _Field(
         id: 'multi',
@@ -179,13 +209,54 @@ class _ProbePageState extends State<_ProbePage> {
       ),
       _Field(id: 'selectable', title: 'SelectableText', kind: _Kind.selectable, text: sentence),
     ];
-    for (final f in _fields) {
-      f.controller.addListener(() => _onChanged(f));
-      f.focusNode.addListener(() => _onFocus(f));
-    }
-    _log.write('start log=${_log.path}');
-    _timer = Timer.periodic(const Duration(milliseconds: 300), (_) => _refresh());
-    WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
+  }
+
+  /// Fields whose configurations put the engine's FlutterTextInputView into
+  /// each frame it can have on a simulator. An autofill configuration (any
+  /// non-null autofillHints) or obscured text gives it a 1x1 frame on iPhone;
+  /// no autofill configuration gives it a zero frame. On iPad (Scribble) it
+  /// gets the field's size whatever the configuration. README.md has the table.
+  static List<_Field> _sizedFields() {
+    const sentence = _sentence;
+    return <_Field>[
+      _Field(
+        id: 'sized-plain',
+        title: 'TextField, default autofillHints (empty list): 1x1, no autofill type',
+        kind: _Kind.material,
+        text: sentence,
+      ),
+      _Field(
+        id: 'sized-nohints',
+        title: 'TextField, autofillHints: null: zero frame',
+        kind: _Kind.material,
+        text: sentence,
+        autofillHints: null,
+      ),
+      _Field(
+        id: 'sized-email',
+        title: 'TextField, autofillHints: [email]: 1x1, regular autofill',
+        kind: _Kind.material,
+        text: sentence,
+        autofillHints: const <String>[AutofillHints.email],
+      ),
+      _Field(
+        id: 'sized-username',
+        title: 'AutofillGroup, username: 1x1, password autofill (secure view)',
+        kind: _Kind.material,
+        text: sentence,
+        autofillHints: const <String>[AutofillHints.username],
+        inAutofillGroup: true,
+      ),
+      _Field(
+        id: 'sized-password',
+        title: 'AutofillGroup, password (obscured)',
+        kind: _Kind.material,
+        text: 'swordfish',
+        obscured: true,
+        autofillHints: const <String>[AutofillHints.password],
+        inAutofillGroup: true,
+      ),
+    ];
   }
 
   @override
@@ -398,7 +469,20 @@ class _ProbePageState extends State<_ProbePage> {
               child: ListView(
                 controller: _scroll,
                 padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-                children: <Widget>[for (final f in _fields) _block(f)],
+                children: <Widget>[
+                  for (final f in _fields)
+                    if (!f.inAutofillGroup) _block(f),
+                  if (_fields.any((f) => f.inAutofillGroup))
+                    AutofillGroup(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: <Widget>[
+                          for (final f in _fields)
+                            if (f.inAutofillGroup) _block(f),
+                        ],
+                      ),
+                    ),
+                ],
               ),
             ),
             _statusArea(),
@@ -498,6 +582,7 @@ class _ProbePageState extends State<_ProbePage> {
           minLines: f.multiline ? 3 : 1,
           maxLines: f.multiline ? null : 1,
           keyboardType: f.multiline ? TextInputType.multiline : TextInputType.text,
+          autofillHints: f.autofillHints,
           style: _fieldStyle,
           decoration: _decoration,
         );

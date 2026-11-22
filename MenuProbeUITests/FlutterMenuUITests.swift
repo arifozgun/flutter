@@ -41,6 +41,50 @@ final class FlutterMenuUITests: XCTestCase {
 
     func test_07_autocorrect() { autocorrect() }
 
+    func test_08_ime_a_afterMenuCycle() { ime("a") }
+    func test_08_ime_b_afterLookUp() { ime("b") }
+    func test_08_ime_c_menuWhileMarked() { ime("c") }
+    func test_08_ime_d_composeCycleCompose() { ime("d") }
+
+    func test_09_sized_plain() { sized("sized-plain") }
+    func test_09_sized_nohints() { sized("sized-nohints") }
+    func test_09_sized_email() { sized("sized-email") }
+    func test_09_sized_username() { sized("sized-username") }
+
+    func test_10_showcase() { showcase() }
+
+    // MARK: - Scenario selection
+
+    /// Skips a test that the workflow's `scenarios` input did not select. The
+    /// selection (`PROBE_SCENARIOS`) is a comma or space separated list of
+    /// groups (the word after `test_NN_` starts with the group: `shape`, `rows`,
+    /// `edit`, `typing`, `cycles`, `selectionChange`, `autocorrect`, `ime`,
+    /// `sized`, `showcase`) or of test method names. Empty or `all` runs all.
+    nonisolated override func setUpWithError() throws {
+        try super.setUpWithError()
+        let selection = ProcessInfo.processInfo.environment["PROBE_SCENARIOS"] ?? ""
+        if !Self.isSelected(testName: name, selection: selection) {
+            throw XCTSkip("not selected by PROBE_SCENARIOS=\(selection)")
+        }
+    }
+
+    nonisolated static func isSelected(testName: String, selection: String) -> Bool {
+        let tokens = selection.lowercased()
+            .split(whereSeparator: { $0 == "," || $0 == " " })
+            .map(String.init)
+        if tokens.isEmpty || tokens.contains("all") {
+            return true
+        }
+        // `name` is "-[FlutterMenuUITests test_05_cycles]".
+        let last = testName.split(separator: " ").last.map(String.init) ?? testName
+        let method = (last.split(separator: ".").last.map(String.init) ?? last)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-[]"))
+            .lowercased()
+        let parts = method.split(separator: "_", maxSplits: 2)
+        let group = parts.count == 3 ? String(parts[2]) : method
+        return tokens.contains { method == $0 || group.hasPrefix($0) }
+    }
+
     // MARK: - Shared data
 
     static let defaultBundleID = "dev.probe.menuProbe"
@@ -77,6 +121,12 @@ final class FlutterMenuUITests: XCTestCase {
         FieldSpec(id: "cupertino", word: "harbor", text: sentence),
         FieldSpec(id: "custom", word: "harbor", text: sentence),
         FieldSpec(id: "selectable", word: "harbor", text: sentence),
+        // The fields of the app's `sized` page (PROBE_PAGE=sized).
+        FieldSpec(id: "sized-plain", word: "harbor", text: sentence),
+        FieldSpec(id: "sized-nohints", word: "harbor", text: sentence),
+        FieldSpec(id: "sized-email", word: "harbor", text: sentence),
+        FieldSpec(id: "sized-username", word: "harbor", text: sentence),
+        FieldSpec(id: "sized-password", word: nil, text: "swordfish"),
     ]
 
     static func spec(_ id: String) -> FieldSpec {
@@ -155,11 +205,15 @@ final class FlutterMenuUITests: XCTestCase {
     /// Starts the Flutter app and waits for its first frame (the `supported`
     /// line). Records the failure and returns nil when it never appears. Safari
     /// is stopped first and the app is relaunched, so that every scenario
-    /// starts from a clean state.
-    private func launchApp(_ scenario: String) -> XCUIApplication? {
+    /// starts from a clean state. `page` goes to the app as `PROBE_PAGE` (the
+    /// `sized` page); the same instance keeps it when it is relaunched.
+    private func launchApp(_ scenario: String, page: String? = nil) -> XCUIApplication? {
         continueAfterFailure = true
         stopSafari()
         let app = XCUIApplication(bundleIdentifier: bundleID)
+        if let page {
+            app.launchEnvironment["PROBE_PAGE"] = page
+        }
         if app.state != .notRunning, app.state != .unknown {
             app.terminate()
         }
@@ -201,6 +255,13 @@ final class FlutterMenuUITests: XCTestCase {
         var words: [(word: String, rect: CGRect)] = []
 
         var readable: Bool { !raw.isEmpty }
+
+        /// True when the value has a composing (marked) range, `composing=a..b`
+        /// with a < b: only an IME produces one.
+        var hasComposing: Bool {
+            let ends = composing.components(separatedBy: "..").compactMap { Int($0) }
+            return ends.count == 2 && ends[0] >= 0 && ends[0] < ends[1]
+        }
 
         var selectedText: String {
             guard base >= 0, extent >= 0, base != extent else { return "" }
@@ -882,6 +943,128 @@ final class FlutterMenuUITests: XCTestCase {
         }
     }
 
+    // MARK: - Helper: IME keyboards
+
+    /// The letters composed on the IME keyboard: "かな" on the Japanese (Romaji)
+    /// keyboard, "ka na" with candidates on the Chinese (Pinyin) one.
+    static let imeLetters = "kana"
+
+    /// Labels of the keyboard's keys in tree order, at most `limit`.
+    private func keyLabels(_ nodes: [Node], limit: Int = 50) -> String {
+        guard let keyboard = nodes.first(where: { $0.type == .keyboard }) else { return "(no keyboard)" }
+        let keys = nodes.filter { $0.ancestors.contains(keyboard.index) && !$0.label.isEmpty }
+        return "[" + uniqueLabels(keys).prefix(limit).joined(separator: ", ") + "]"
+    }
+
+    /// The globe key. On iPhones with Face ID it sits below the keyboard, so the
+    /// whole tree is searched.
+    private func nextKeyboardKey(_ nodes: [Node]) -> Node? {
+        nodes.first { node in
+            let text = (node.label + " " + node.identifier).lowercased()
+            return !isOwn(node) && !node.frame.isEmpty && (node.type == .button || node.type == .key)
+                && (text.contains("next keyboard") || text.contains("globe"))
+        }
+    }
+
+    /// One delete: the delete key, else a typed backspace.
+    private func tapDelete(_ app: XCUIApplication) -> String {
+        let key = app.keys["delete"]
+        if key.exists, key.isHittable {
+            key.tap()
+            return "key"
+        }
+        app.typeText(XCUIKeyboardKey.delete.rawValue)
+        return "typeText"
+    }
+
+    /// Tells an IME keyboard from a Latin one by what it does: types one letter
+    /// with the "a" key and deletes it again. Only an IME leaves the letter as
+    /// marked (composing) text. `ime` is nil when the keyboard has no "a" key
+    /// (emoji, numbers).
+    private func probeKeyboard(_ app: XCUIApplication) -> (ime: Bool?, note: String) {
+        guard let key = ["a", "A"].map({ app.keys[$0] }).first(where: { $0.exists && $0.isHittable }) else {
+            return (nil, "no a key")
+        }
+        let before = readStatus(app)
+        key.tap()
+        pause(0.8)
+        let typed = readStatus(app)
+        var deletes = [tapDelete(app)]
+        pause(0.8)
+        var after = readStatus(app)
+        if after.text.utf16.count > before.text.utf16.count {
+            deletes.append(tapDelete(app))
+            pause(0.8)
+            after = readStatus(app)
+        }
+        let ime = typed.hasComposing
+        let tail = String(typed.text.suffix(3)).replacingOccurrences(of: "\n", with: "\\n")
+        return (ime, "a gave tail=\"\(tail)\" composing=\(typed.composing) ime=\(ime) "
+            + "deleted=\(deletes.joined(separator: "+")) restored=\(after.text == before.text)")
+    }
+
+    /// Brings up an IME keyboard (`ime: true`) or a Latin one by tapping the
+    /// globe key and probing after each tap. The focused field's caret must be
+    /// where a probe letter may go. Returns whether it got there, and the steps.
+    private func switchKeyboard(_ app: XCUIApplication, ime wanted: Bool) -> (ok: Bool, steps: String) {
+        guard keyboardShown(app) else { return (false, "no keyboard on screen") }
+        var steps: [String] = []
+        for attempt in 0..<7 {
+            let probe = probeKeyboard(app)
+            steps.append("probe\(attempt): \(probe.note)")
+            if probe.ime == wanted {
+                return (true, steps.joined(separator: "; "))
+            }
+            let nodes = snapshotNodes(app)
+            guard let globe = nextKeyboardKey(nodes) else {
+                steps.append("no Next keyboard key; keys=\(keyLabels(nodes))")
+                return (false, steps.joined(separator: "; "))
+            }
+            steps.append("tap \(globe.summary)")
+            tap(app, at: center(globe.frame))
+            pause(1.2)
+        }
+        return (false, steps.joined(separator: "; "))
+    }
+
+    /// Puts the caret at the end of the field's text by a tap near its right
+    /// edge, twice if no keyboard came up. False when the field is missing or
+    /// no keyboard is up.
+    private func focusEnd(_ app: XCUIApplication, _ spec: FieldSpec) -> Bool {
+        for _ in 0..<2 {
+            guard let frame = fieldFrame(app, spec) else { return false }
+            tap(app, at: CGPoint(x: frame.maxX - 20, y: frame.midY))
+            pause(1.3)
+            if keyboardShown(app), readStatus(app).field == spec.id {
+                return true
+            }
+        }
+        return keyboardShown(app)
+    }
+
+    /// Commits marked text with the keyboard's return key, whose label depends
+    /// on the keyboard ("confirm" while Japanese text is marked). Falls back to
+    /// typing a newline.
+    private func commitMarked(_ app: XCUIApplication) -> String {
+        let nodes = snapshotNodes(app)
+        if let keyboard = nodes.first(where: { $0.type == .keyboard }) {
+            let keys = nodes.filter { node in
+                node.ancestors.contains(keyboard.index) && !node.frame.isEmpty
+                    && (node.type == .button || node.type == .key)
+            }
+            for name in ["confirm", "確定", "return", "改行", "enter", "done", "go"] {
+                if let key = keys.first(where: { $0.label.lowercased() == name }) {
+                    tap(app, at: center(key.frame))
+                    pause(1.0)
+                    return "tap \(key.summary)"
+                }
+            }
+        }
+        app.typeText("\n")
+        pause(1.0)
+        return "typeText newline (no return key found; keys=\(keyLabels(nodes)))"
+    }
+
     // MARK: - Scenario: shape
 
     private func shape(_ id: String) {
@@ -1497,6 +1680,381 @@ final class FlutterMenuUITests: XCTestCase {
                 + "selAfterTap=\(tapStatus.base)..\(tapStatus.extent) composingAfterTyping=\(typedStatus.composing) "
                 + "composingAfterTap=\(tapStatus.composing)"
         )
+    }
+
+    // MARK: - Scenario: marked text (IME)
+
+    /// Marked (composing) text from a Japanese or Chinese keyboard around the
+    /// menu, in the `single` field. The workflow adds those keyboards to the
+    /// simulator; the globe key brings one up (`toIME:`, `imeKeys=`). Every step
+    /// records the app's value (text, selection, composing range) and the menu.
+    /// `exercised=yes markedAt=[...]` names the steps whose value had a
+    /// composing range, the proof that marked text existed; when no IME
+    /// keyboard is reached the line ends in `exercised=no` and
+    /// `RESULT=ime-unreachable`. The keyboard is switched back to a Latin one at
+    /// the end (`toLatin:`).
+    ///
+    /// a: menu cycle, then compose and commit. b: Look Up and its sheet closed,
+    /// then compose and commit. c: compose, then a double tap on another word
+    /// while the text is marked; then, after a reset, a long press. d: compose
+    /// and commit, menu cycle, compose and commit again.
+    private func ime(_ variant: String) {
+        let scenario = "ime-\(variant)"
+        guard let app = launchApp(scenario) else { return }
+        defer { app.terminate() }
+        let spec = Self.spec("single")
+        var notes = ["start=\(Self.stamp())", supportedLine(app)]
+        var marked: [String] = []
+        var result = "recorded (compare the steps between runs)"
+        defer { summary(scenario, notes) }
+        defer {
+            if inFront(app), focusEnd(app, spec) {
+                notes.append("toLatin: \(switchKeyboard(app, ime: false).steps)")
+            } else {
+                notes.append("toLatin: the field could not be focused")
+            }
+            notes.append(marked.isEmpty
+                ? "exercised=no (no step had composing text)"
+                : "exercised=yes markedAt=[\(marked.joined(separator: ","))]")
+            notes.append("RESULT=\(result)")
+        }
+
+        func record(_ step: String, hierarchy: Bool = false) -> Status {
+            let nodes = snapshotNodes(app)
+            let status = readStatus(app)
+            if status.hasComposing {
+                marked.append(step)
+            }
+            notes.append("\(step) at \(Self.stamp()): keyboard=\(keyboardShown(app)) "
+                + "menu=[\(labels(menuRows(nodes)))] status: \(status.oneLine)")
+            saveScreenshot("\(scenario)-\(step)")
+            if hierarchy {
+                saveHierarchy("\(scenario)-\(step)-hierarchy", app, nodes: nodes)
+            }
+            return status
+        }
+
+        /// Types the letters at the caret. When no composing range came, the
+        /// IME keyboard is brought up again and the letters typed once more.
+        func compose(_ step: String) -> (status: Status, base: String) {
+            let base = readStatus(app).text
+            notes.append("\(step) typed \(Self.imeLetters) (\(typeText(app, Self.imeLetters)))")
+            var status = record(step)
+            if !status.hasComposing {
+                notes.append("\(step) no composing text; switch again: \(switchKeyboard(app, ime: true).steps)")
+                notes.append("\(step)-retry typed \(Self.imeLetters) (\(typeText(app, Self.imeLetters)))")
+                status = record("\(step)-retry")
+            }
+            return (status, base)
+        }
+
+        /// Commits the marked text and records whether the text kept it.
+        func commit(_ step: String, _ composed: (status: Status, base: String)) {
+            guard composed.status.hasComposing else {
+                notes.append("\(step): nothing marked to commit")
+                return
+            }
+            notes.append("\(step) commit: \(commitMarked(app))")
+            let after = record(step)
+            let kept = !after.hasComposing && after.text != composed.base
+                && after.text.hasPrefix(composed.base)
+            notes.append("\(step) committed=\(kept)")
+        }
+
+        guard focusEnd(app, spec) else {
+            saveScreenshot("\(scenario)-0-no-focus")
+            result = "field-not-focused"
+            return
+        }
+        let reach = switchKeyboard(app, ime: true)
+        let keyboardNodes = snapshotNodes(app)
+        notes.append("toIME: ok=\(reach.ok) \(reach.steps)")
+        notes.append("imeKeys=\(keyLabels(keyboardNodes))")
+        saveScreenshot("\(scenario)-0-keyboard")
+        saveHierarchy("\(scenario)-0-keyboard-hierarchy", app, nodes: keyboardNodes)
+        guard reach.ok else {
+            result = "ime-unreachable (no keyboard gave marked text; see toIME and the 0-keyboard screenshot)"
+            return
+        }
+
+        switch variant {
+        case "a":
+            let selection = focusAndSelect(app, spec, word: "harbor", reset: false)
+            notes.append("a1 select=\(selection.ok ? "ok" : "FAILED") (\(selection.how)) "
+                + "menuShown=\(!menuRows(waitForMenu(app)).isEmpty)")
+            _ = record("a1-menu")
+            notes.append("a2 dismissed by a tap at the end, focused=\(focusEnd(app, spec))")
+            _ = record("a2-dismissed")
+            commit("a4-committed", compose("a3-composed"))
+        case "b":
+            let selection = focusAndSelect(app, spec, word: "harbor", reset: false)
+            notes.append("b1 select=\(selection.ok ? "ok" : "FAILED") (\(selection.how))")
+            if menuTap(app, "Look Up", notes: &notes) {
+                let seen = observeAfterTap(app, row: "Look Up")
+                saveScreenshot("\(scenario)-b2-lookup-shown")
+                notes.append("b2 lookUp outcome=\(seen.outcome) closedBy=\(returnToApp(app))")
+            } else {
+                notes.append("b2 Look Up not available")
+            }
+            _ = record("b3-back")
+            notes.append("b3 refocused=\(focusEnd(app, spec))")
+            commit("b5-committed", compose("b4-composed"))
+        case "c":
+            let composed = compose("c1-composed")
+            if let rect = composed.status.rect(of: "quiet") {
+                doubleTap(app, at: center(rect))
+                pause(0.4)
+                _ = record("c2-doubleTap-0.4s")
+                pause(1.2)
+                _ = record("c3-doubleTap-1.6s", hierarchy: true)
+            } else {
+                notes.append("c2 no rectangle for \"quiet\" in the status")
+            }
+            let reset = resetApp(app)
+            notes.append("c4 reset\(reset.isEmpty ? "" : " (\(reset))") refocused=\(focusEnd(app, spec))")
+            let again = compose("c4-composed")
+            if let rect = again.status.rect(of: "harbor") {
+                coordinate(app, center(rect)).press(forDuration: 1.0)
+                pause(0.4)
+                _ = record("c5-longPress-0.4s")
+                pause(1.2)
+                _ = record("c6-longPress-1.6s", hierarchy: true)
+            } else {
+                notes.append("c5 no rectangle for \"harbor\" in the status")
+            }
+        default:
+            commit("d2-committed", compose("d1-composed"))
+            let selection = focusAndSelect(app, spec, word: "harbor", reset: false)
+            notes.append("d3 select=\(selection.ok ? "ok" : "FAILED") (\(selection.how)) "
+                + "menuShown=\(!menuRows(waitForMenu(app)).isEmpty)")
+            _ = record("d3-menu")
+            notes.append("d4 dismissed by a tap at the end, focused=\(focusEnd(app, spec))")
+            _ = record("d4-dismissed")
+            commit("d6-committed", compose("d5-composed"))
+        }
+    }
+
+    // MARK: - Scenario: an input view with a size
+
+    /// The frame of the field's FlutterTextInputView on an iPhone, from the
+    /// engine source (README.md has the lines). On an iPad (Scribble) every
+    /// field's view gets the field's own size instead.
+    static let sizedFrames: [String: String] = [
+        "sized-plain": "1x1 (autofill configuration without hints, autofill type none)",
+        "sized-nohints": "zero (no autofill configuration)",
+        "sized-email": "1x1 (regular autofill)",
+        "sized-username": "1x1 (password autofill group, FlutterSecureTextInputView)",
+    ]
+
+    /// The rows Flutter's default menu asks for when a word is selected, with
+    /// the titles iOS gives them; Translate comes with UIKit's lookup group.
+    /// Any other row was added by UIKit.
+    static let requestedTitles: Set<String> = [
+        "Cut", "Copy", "Paste", "Select All", "Look Up", "Translate", "Search Web", "Share", "Share…", "Share...",
+    ]
+
+    private func unrequested(_ rows: [Node]) -> String {
+        uniqueLabels(rows.filter { !Self.requestedTitles.contains($0.label) }).joined(separator: ", ")
+    }
+
+    /// Elements that neither the app's own elements, the keyboard nor the menu
+    /// rows account for: a UIKit menu, popover, text view or image (a native
+    /// handle or cursor, if UIKit exposes one) shows up here. At most 12.
+    private func foreignElements(_ nodes: [Node]) -> String {
+        let own = Set(nodes.filter { isOwn($0) }.map(\.index))
+        let keyboard = Set(nodes.filter { $0.type == .keyboard }.map(\.index))
+        let kinds: Set<XCUIElement.ElementType> = [
+            .menu, .menuItem, .popover, .sheet, .textView, .textField, .secureTextField, .image,
+        ]
+        let found = nodes.filter { node in
+            kinds.contains(node.type) && !own.contains(node.index) && !Self.knownTitles.contains(node.label)
+                && !node.ancestors.contains { own.contains($0) || keyboard.contains($0) }
+        }
+        return found.prefix(12).map(\.summary).joined(separator: ", ")
+    }
+
+    /// One field of the app's `sized` page (README.md: which frame the engine
+    /// gives its input view). 1: the menu's shape. 2: Look Up, Translate and
+    /// Share, one `<field>-row-<row>` line each, as in the rows scenarios. 3:
+    /// from a fresh selection each, while the menu is shown: a tap at the end
+    /// of the same field, a tap in another field, a drag of the end handle, a
+    /// double tap on another word; after each the menu, rows Flutter did not ask
+    /// for (`unrequested=`), elements nobody accounts for (`foreign=`) and the
+    /// app's value. 4: typing.
+    private func sized(_ id: String) {
+        let scenario = id
+        let spec = Self.spec(id)
+        let other = Self.spec(id == "sized-plain" ? "sized-email" : "sized-plain")
+        guard let app = launchApp(scenario, page: "sized") else { return }
+        defer { app.terminate() }
+        var notes = ["start=\(Self.stamp())", supportedLine(app)]
+        var exercised = "no (the word was not selected with the menu shown)"
+        var result = "recorded (compare the steps between runs)"
+        defer { summary(scenario, notes) }
+        defer {
+            notes.append("exercised=\(exercised)")
+            notes.append("RESULT=\(result)")
+        }
+        guard element(app, spec.identifier).waitForExistence(timeout: 5) else {
+            saveScreenshot("\(scenario)-0-page-missing")
+            saveText("\(scenario)-0-page-missing-hierarchy", describe(snapshotNodes(app)))
+            exercised = "no (the sized page is not on screen)"
+            result = "page-not-shown (PROBE_PAGE=sized did not reach the app)"
+            return
+        }
+        notes.append("expectedFrame=\(Self.sizedFrames[id] ?? "?") screen=\(Int(app.frame.width))x\(Int(app.frame.height))")
+
+        // 1. The menu's shape.
+        let selection = focusAndSelect(app, spec, word: spec.word)
+        let nodes = waitForMenu(app)
+        let rows = menuRows(nodes)
+        notes.append("1 select=\(selection.ok ? "ok" : "FAILED") (\(selection.how)) collapsed=[\(labels(rows))] "
+            + "all=[\(allMenuLabels(nodes, rows: rows))] unrequested=[\(unrequested(rows))]")
+        saveScreenshot("\(scenario)-1-collapsed")
+        saveHierarchy("\(scenario)-1-collapsed-hierarchy", app, nodes: nodes)
+        if selection.ok, !rows.isEmpty {
+            exercised = "yes (word selected, menu shown in \(id))"
+            let expansion = expandMenu(app, tag: scenario)
+            let pages = expansion.pages.enumerated().map { "page\($0.offset + 1)=[\($0.element.joined(separator: ", "))]" }
+            notes.append("1 mode=\(expansion.mode) pages=\(expansion.pages.count) " + pages.joined(separator: " "))
+        }
+
+        // 2. The rows that open a sheet.
+        for row in ["Look Up", "Translate", "Share"] {
+            let key = row.replacingOccurrences(of: " ", with: "")
+            rowTap(app, spec, row, scenario: "\(scenario)-row-\(key.prefix(1).lowercased() + key.dropFirst())")
+            stopSafari()
+        }
+
+        // 3. Actions while the menu is shown.
+        for (step, action) in [("3a", "tapSameField"), ("3b", "tapOtherField"), ("3c", "dragHandle"), ("3d", "doubleTapOtherWord")] {
+            let name = "\(step)-\(action)"
+            let fresh = focusAndSelect(app, spec, word: spec.word)
+            let shown = !menuRows(waitForMenu(app)).isEmpty
+            guard fresh.ok, shown, let frame = fieldFrame(app, spec) else {
+                notes.append("\(name): select=\(fresh.ok) menuShown=\(shown); skipped")
+                continue
+            }
+            let how: String
+            switch action {
+            case "tapSameField":
+                tap(app, at: CGPoint(x: frame.maxX - 20, y: frame.midY))
+                how = "tap at the end of the field"
+            case "tapOtherField":
+                if let otherFrame = fieldFrame(app, other) {
+                    tap(app, at: CGPoint(x: otherFrame.minX + 24, y: otherFrame.midY))
+                    how = "tap in \(other.id)"
+                } else {
+                    how = "\(other.id) not found"
+                }
+            case "dragHandle":
+                // Flutter draws its own handles; the end handle's knob is just
+                // below the end of the selection.
+                if let rect = fresh.status.selRect {
+                    let start = CGPoint(x: rect.maxX, y: rect.maxY + 6)
+                    drag(app, from: start, to: CGPoint(x: start.x + 70, y: start.y))
+                    how = "drag from the end of the selection 70 to the right"
+                } else {
+                    how = "no selection rectangle"
+                }
+            default:
+                if let rect = fresh.status.rect(of: "quiet") {
+                    doubleTap(app, at: center(rect))
+                    how = "double tap on quiet"
+                } else {
+                    how = "no rectangle for quiet"
+                }
+            }
+            pause(1.5)
+            let after = snapshotNodes(app)
+            let afterRows = menuRows(after)
+            let status = readStatus(app)
+            notes.append("\(name): how=\(how) menu=[\(labels(afterRows))] unrequested=[\(unrequested(afterRows))] "
+                + "foreign=[\(foreignElements(after))] status: \(status.oneLine)")
+            saveScreenshot("\(scenario)-\(name)")
+            saveHierarchy("\(scenario)-\(name)-hierarchy", app, nodes: after)
+        }
+
+        // 4. Typing on a Latin keyboard.
+        let focused = focusEnd(app, spec)
+        let latin = focused && switchKeyboard(app, ime: false).ok
+        let before = readStatus(app)
+        let typed = typeText(app, "xyz")
+        let after = readStatus(app)
+        notes.append("4 focused=\(focused) latinKeyboard=\(latin) typed xyz (\(typed)) "
+            + "typedOK=\(after.text == before.text + "xyz") status: \(after.oneLine)")
+        saveScreenshot("\(scenario)-4-typed")
+    }
+
+    // MARK: - Scenario: showcase clip
+
+    /// When the workflow started the screen recording, if it wrote that down.
+    private func recordingStart() -> TimeInterval? {
+        let file = outDir.appendingPathComponent("recording-start.txt")
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
+        return TimeInterval(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    /// A short, slow sequence for the screen recording: select a word, show
+    /// the menu, expand (iOS 26) or page (17/18) it, Look Up and close its
+    /// sheet, the menu again, Copy. `clipStart=` and `clipEnd=` are wall-clock
+    /// times; `clipFrom=` and `clipTo=` are seconds into recording.mp4.
+    private func showcase() {
+        let scenario = "showcase"
+        guard let app = launchApp(scenario) else { return }
+        defer { app.terminate() }
+        let spec = Self.spec("single")
+        var notes = ["start=\(Self.stamp())", supportedLine(app)]
+        defer { summary(scenario, notes) }
+        resetApp(app)
+        pause(1.5)
+        let clipStart = Date().timeIntervalSince1970
+        notes.append("clipStart=\(Self.stamp())")
+
+        let selection = focusAndSelect(app, spec, word: "harbor", reset: false)
+        let first = waitForMenu(app)
+        notes.append("1 select=\(selection.ok ? "ok" : "FAILED") (\(selection.how)) menu=[\(labels(menuRows(first)))]")
+        pause(2.0)
+        if let chevron = chevronTarget(nodes: first, app: app) {
+            tap(app, at: chevron.point)
+            pause(2.0)
+            notes.append("2 chevron tapped: menu=[\(labels(menuRows(snapshotNodes(app))))]")
+        } else {
+            notes.append("2 no chevron")
+        }
+        if menuTap(app, "Look Up", notes: &notes) {
+            let seen = observeAfterTap(app, row: "Look Up")
+            pause(2.0)
+            notes.append("3 lookUp outcome=\(seen.outcome) closedBy=\(returnToApp(app))")
+            pause(1.5)
+        } else {
+            notes.append("3 Look Up not available")
+        }
+        if let rect = readStatus(app).rect(of: "harbor") {
+            doubleTap(app, at: center(rect))
+        } else if let point = selection.point {
+            doubleTap(app, at: point)
+        }
+        pause(1.0)
+        var shown = !menuRows(waitForMenu(app)).isEmpty
+        if !shown {
+            let again = focusAndSelect(app, spec, word: "harbor", reset: false)
+            shown = !menuRows(waitForMenu(app)).isEmpty
+            notes.append("4 selected again (\(again.how))")
+        }
+        notes.append("4 menuAgain=\(shown)")
+        pause(1.5)
+        let copied = shown && menuTap(app, "Copy", notes: &notes)
+        pause(1.5)
+        let clipEnd = Date().timeIntervalSince1970
+        notes.append("5 copy=\(copied) status: \(readStatus(app).oneLine)")
+        notes.append("clipEnd=\(Self.stamp())")
+        if let recording = recordingStart() {
+            notes.append(String(format: "clipFrom=%.1fs clipTo=%.1fs", clipStart - recording, clipEnd - recording))
+        } else {
+            notes.append("clipFrom=unknown (no recording-start.txt)")
+        }
+        notes.append("RESULT=\(selection.ok && copied ? "ok" : "partial")")
     }
 
     // MARK: - Output
