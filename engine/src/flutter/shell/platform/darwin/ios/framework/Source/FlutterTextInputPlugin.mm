@@ -862,6 +862,33 @@ static void EditMenuDiagLog(UIView* view, NSString* format, ...) {
         (__bridge void*)view, view.isFirstResponder, message);
 }
 
+static NSUInteger gEditMenuDiagStackSequence = 0;
+
+// Logs the call stack, one line per frame so the log system does not truncate it. The lines of one
+// stack share the sequence number.
+static void EditMenuDiagLogStack(UIView* view, NSString* label) {
+  NSArray<NSString*>* symbols = [NSThread callStackSymbols];
+  NSUInteger sequence = ++gEditMenuDiagStackSequence;
+  NSUInteger count = MIN(symbols.count, (NSUInteger)30);
+  for (NSUInteger index = 0; index < count; index++) {
+    // A frame reads "<index> <image> <address> <symbol> + <offset>". Drop the index and address.
+    NSMutableArray<NSString*>* parts = [NSMutableArray array];
+    for (NSString* part in [symbols[index] componentsSeparatedByString:@" "]) {
+      if (part.length > 0) {
+        [parts addObject:part];
+      }
+    }
+    NSString* text = symbols[index];
+    if (parts.count >= 4) {
+      NSString* symbol = [[parts subarrayWithRange:NSMakeRange(3, parts.count - 3)]
+          componentsJoinedByString:@" "];
+      text = [NSString stringWithFormat:@"%@ %@", parts[1], symbol];
+    }
+    EditMenuDiagLog(view, @"stack=%@ seq=%lu frame=%lu %@", label, (unsigned long)sequence,
+                    (unsigned long)index, text);
+  }
+}
+
 @implementation FlutterTextInputView {
   int _textInputClient;
   const char* _selectionAffinity;
@@ -1373,11 +1400,14 @@ static void EditMenuDiagLog(UIView* view, NSString* format, ...) {
     EditMenuDiagLog(self, @"remove reason=newMenuWithoutSystemRows attached=%d->%d", diagAttached,
                     _editMenuTextInteraction.view == self);
   }
-  EditMenuDiagLog(self, @"showEditMenu count=%lu items=%@ attached=%d->%d inputDelegate=%@->%@",
+  EditMenuDiagLog(self,
+                  @"showEditMenu count=%lu items=%@ attached=%d->%d inputDelegate=%@->%@ "
+                  @"frame=%@ windowNil=%d interactions=%lu",
                   (unsigned long)_editMenuPresentationCount,
                   [[items valueForKey:@"type"] componentsJoinedByString:@","], diagAttachedBefore,
                   _editMenuTextInteraction.view == self, diagDelegateBefore,
-                  EditMenuDiagDescribe(self.inputDelegate));
+                  EditMenuDiagDescribe(self.inputDelegate), NSStringFromCGRect(self.frame),
+                  self.window == nil, (unsigned long)self.interactions.count);
 
   UIEditMenuConfiguration* config =
       [UIEditMenuConfiguration configurationWithIdentifier:@(_editMenuPresentationCount)
@@ -1687,11 +1717,19 @@ static void EditMenuDiagLog(UIView* view, NSString* format, ...) {
   // become the first responder. This prevents iOS
   // from changing focus by itself (the framework
   // focus will be out of sync if that happens).
-  return _textInputClient != 0;
+  BOOL result = _textInputClient != 0;
+  if (!self.isFirstResponder) {
+    EditMenuDiagLog(self, @"canBecomeFirstResponder result=%d clientIsZero=%d", result,
+                    _textInputClient == 0);
+  }
+  return result;
 }
 
 - (BOOL)becomeFirstResponder {
   BOOL wasFirstResponder = self.isFirstResponder;
+  if (!wasFirstResponder) {
+    EditMenuDiagLogStack(self, @"becomeFirstResponder");
+  }
   BOOL success = [super becomeFirstResponder];
   if (success && !wasFirstResponder && self.isFirstResponder &&
       _shouldNotifyFrameworkOnFirstResponderRestore) {
@@ -1726,6 +1764,7 @@ static void EditMenuDiagLog(UIView* view, NSString* format, ...) {
 
 - (BOOL)resignFirstResponder {
   BOOL wasFirstResponder = self.isFirstResponder;
+  EditMenuDiagLogStack(self, @"resignFirstResponder");
   BOOL success = [super resignFirstResponder];
   EditMenuDiagLog(self, @"resignFirstResponder success=%d was=%d inputDelegate=%@ attached=%d",
                   success, wasFirstResponder, EditMenuDiagDescribe(self.inputDelegate),
@@ -1742,6 +1781,9 @@ static void EditMenuDiagLog(UIView* view, NSString* format, ...) {
       _shouldNotifyFrameworkOnFirstResponderRestore =
           !_isResigningFirstResponderFromFramework && _textInputClient != 0;
     }
+    EditMenuDiagLog(self, @"resign reported to framework client=%d fromFramework=%d wasFr=%d",
+                    _textInputClient, _isResigningFirstResponderFromFramework,
+                    wasFirstResponder);
     [self.textInputDelegate flutterTextInputView:self
         didResignFirstResponderWithTextInputClient:_textInputClient];
   }
