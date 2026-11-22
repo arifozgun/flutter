@@ -369,7 +369,7 @@ final class IOSSystemContextMenuItemSelectAll extends IOSSystemContextMenuItem {
 /// platform. Typically it should be set to
 /// [WidgetsLocalizations.lookUpButtonLabel].
 ///
-/// On iOS 17 and above, the platform shows its own look up group in place of
+/// On iOS 18 and above, the platform shows its own look up group in place of
 /// this item, with the platform's own titles. That group can also hold the
 /// platform's Translate button, and the platform decides which of its buttons
 /// it shows. The [title] is displayed on earlier versions of iOS, and when the
@@ -412,7 +412,7 @@ final class IOSSystemContextMenuItemLookUp extends IOSSystemContextMenuItem with
 /// [WidgetsLocalizations.searchWebButtonLabel]. The [title] is displayed on all
 /// versions of iOS.
 ///
-/// On iOS 17 and above, when the platform's look up group is shown for an
+/// On iOS 18 and above, when the platform's look up group is shown for an
 /// [IOSSystemContextMenuItemLookUp], this button is shown at the end of that
 /// group.
 ///
@@ -456,7 +456,7 @@ final class IOSSystemContextMenuItemSearchWeb extends IOSSystemContextMenuItem w
 /// platform. Typically it should be set to
 /// [WidgetsLocalizations.shareButtonLabel].
 ///
-/// On iOS 17 and above, the platform shows its own share button in place of
+/// On iOS 18 and above, the platform shows its own share button in place of
 /// this item, with the platform's own title. The [title] is displayed on
 /// earlier versions of iOS, and when the platform offers no share button.
 ///
@@ -513,7 +513,7 @@ final class IOSSystemContextMenuItemLiveText extends IOSSystemContextMenuItem {
 ///
 /// The [title] and [onPressed] callback must be provided.
 ///
-/// On iOS 17 and above, the built-in cut, copy, paste, select all and Live Text
+/// On iOS 18 and above, the built-in cut, copy, paste, select all and Live Text
 /// buttons are shown as one group, at the position of the first of them in
 /// [SystemContextMenu.items]. Custom items are never shown inside that group,
 /// so a custom item listed between built-in editing items is shown after it.

@@ -3793,7 +3793,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldPresentEditMenuWithCorectItemsAndCorrectOrderingForBasicEditingActions {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     FlutterTextInputPlugin* myInputPlugin =
         [[FlutterTextInputPlugin alloc] initWithDelegate:OCMClassMock([FlutterEngine class])];
     FlutterViewController* myViewController = [[FlutterViewController alloc] init];
@@ -3859,7 +3859,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldPresentEditMenuWithCorectItemsUnderNestedSubtreeForBasicEditingActions {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     FlutterTextInputPlugin* myInputPlugin =
         [[FlutterTextInputPlugin alloc] initWithDelegate:OCMClassMock([FlutterEngine class])];
     FlutterViewController* myViewController = [[FlutterViewController alloc] init];
@@ -3941,7 +3941,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldPresentEditMenuWithCorectItemsForMoreAdditionalItems {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     FlutterTextInputPlugin* myInputPlugin =
         [[FlutterTextInputPlugin alloc] initWithDelegate:OCMClassMock([FlutterEngine class])];
     FlutterViewController* myViewController = [[FlutterViewController alloc] init];
@@ -4559,7 +4559,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldCreateCustomMenuItemWithCorrectProperties {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     FlutterTextInputPlugin* myInputPlugin =
         [[FlutterTextInputPlugin alloc] initWithDelegate:OCMClassMock([FlutterEngine class])];
     FlutterViewController* myViewController = [[FlutterViewController alloc] init];
@@ -4611,7 +4611,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_customActionShouldTriggerDelegateCallback {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     id mockEngine = OCMClassMock([FlutterEngine class]);
     id mockPlatformChannel = OCMClassMock([FlutterMethodChannel class]);
     OCMStub([mockEngine platformChannel]).andReturn(mockPlatformChannel);
@@ -4679,7 +4679,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldBuildDefaultItemsFromSystemGroups {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -4728,7 +4728,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldAddLookupGroupOnceForLookUpAndTranslate {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -4751,7 +4751,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldUseInlineEditGroupWithoutSuggestedStandardEditGroup {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -4784,7 +4784,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_shouldPlaceCustomItemsOutsideTheEditGroup {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -4834,7 +4834,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_textInteractionIsAttachedOnlyForSystemTextRows {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -4854,7 +4854,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_textInteractionIsRemovedWhenDismissAnimationCompletes {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -4874,7 +4874,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_olderDismissalDoesNotRemoveTextInteractionOfNewerMenu {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -4908,7 +4908,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_textInteractionIsRemovedOnResignFirstResponder {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     FlutterTextInputView* inputView = [[FlutterTextInputView alloc] initWithOwner:textInputPlugin];
     [UIApplication.sharedApplication.keyWindow addSubview:inputView];
     [inputView setTextInputClient:123];
@@ -4928,7 +4928,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_textInteractionIsRemovedWhenViewLeavesWindow {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     FlutterTextInputView* inputView = [[FlutterTextInputView alloc] initWithOwner:textInputPlugin];
     [UIApplication.sharedApplication.keyWindow addSubview:inputView];
     FlutterTextInputView* mockInputView = OCMPartialMock(inputView);
@@ -4948,7 +4948,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 // view's inputDelegate. This interaction is not the edit menu's, so the view applies the
 // assignment.
 - (void)testEditMenu_textInteractionReplacesInputDelegate {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -4968,7 +4968,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 // Text and selection changes from the framework keep reaching the delegate UIKit set while the
 // edit menu's interaction is attached.
 - (void)testEditMenu_changesAreReportedToInputDelegateWhileTextInteractionIsAttached {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -4993,7 +4993,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_inputDelegateIsKeptWhileTextInteractionIsAttached {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -5018,7 +5018,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_inputDelegateIsKeptWhenMenuIsShownAgain {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -5041,7 +5041,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_inputDelegateIsKeptWhenNewMenuHasNoSystemTextRows {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -5058,7 +5058,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 }
 
 - (void)testEditMenu_nilInputDelegateStaysNilAcrossMenu {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -5080,7 +5080,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 
 // Only the view's own attaching and removing of the interaction are ignored.
 - (void)testEditMenu_otherInputDelegateAssignmentsApplyWhileTextInteractionIsAttached {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
         [self editMenuInputViewRecordingConfigurations:configurations];
@@ -5101,7 +5101,7 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
 // Resigning and becoming first responder while the edit menu's interaction is attached leave
 // inputDelegate to UIKit, as for a view that showed no menu.
 - (void)testEditMenu_inputDelegateFollowsUIKitAcrossResignFirstResponder {
-  if (@available(iOS 17.0, *)) {
+  if (@available(iOS 18.0, *)) {
     id<UITextInputDelegate> keyboardDelegate = OCMProtocolMock(@protocol(UITextInputDelegate));
 
     FlutterTextInputView* plainView = [[FlutterTextInputView alloc] initWithOwner:textInputPlugin];

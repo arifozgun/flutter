@@ -3270,7 +3270,7 @@ final class IOSSystemContextMenuItemDataSelectAll extends IOSSystemContextMenuIt
 ///
 /// Must specify a [title], typically [WidgetsLocalizations.lookUpButtonLabel].
 ///
-/// On iOS 17 and above, the platform shows its own look up group in place of
+/// On iOS 18 and above, the platform shows its own look up group in place of
 /// this item, with the platform's own titles. That group can also hold the
 /// platform's Translate button, and the platform decides which of its buttons
 /// it shows. The [title] is displayed on earlier versions of iOS, and when the
@@ -3310,7 +3310,7 @@ final class IOSSystemContextMenuItemDataLookUp extends IOSSystemContextMenuItemD
 /// [WidgetsLocalizations.searchWebButtonLabel]. The [title] is displayed on all
 /// versions of iOS.
 ///
-/// On iOS 17 and above, when the platform's look up group is shown for an
+/// On iOS 18 and above, when the platform's look up group is shown for an
 /// [IOSSystemContextMenuItemDataLookUp], this button is shown at the end of
 /// that group.
 ///
@@ -3346,7 +3346,7 @@ final class IOSSystemContextMenuItemDataSearchWeb extends IOSSystemContextMenuIt
 /// Must specify a [title], typically
 /// [WidgetsLocalizations.shareButtonLabel].
 ///
-/// On iOS 17 and above, the platform shows its own share button in place of
+/// On iOS 18 and above, the platform shows its own share button in place of
 /// this item, with the platform's own title. The [title] is displayed on
 /// earlier versions of iOS, and when the platform offers no share button.
 ///
@@ -3406,7 +3406,7 @@ final class IOSSystemContextMenuItemDataLiveText extends IOSSystemContextMenuIte
 ///
 /// Only supported on iOS 16.0 and above.
 ///
-/// On iOS 17 and above, the built-in cut, copy, paste, select all and Live Text
+/// On iOS 18 and above, the built-in cut, copy, paste, select all and Live Text
 /// buttons are shown as one group, at the position of the first of them in the
 /// items. Custom items are never shown inside that group, so a custom item
 /// listed between built-in editing items is shown after it.

@@ -1082,7 +1082,9 @@ static BOOL EditMenuItemsUseSystemTextRows(NSArray<NSDictionary*>* items) {
 // Whether the edit menu is built from UIKit's own menu groups, so that the system entries keep
 // the titles, icons and layout iOS gives them. Earlier versions get a flat list of commands.
 - (BOOL)usesSystemEditMenuGroups {
-  if (@available(iOS 17.0, *)) {
+  // On iOS 17, after UIKit's own Look Up is closed on iPad, UIKit does not make the text input
+  // view first responder again, so the text field loses focus. From iOS 18 on it does.
+  if (@available(iOS 18.0, *)) {
     return YES;
   }
   return NO;
