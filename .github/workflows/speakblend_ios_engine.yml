@@ -3,12 +3,23 @@
 # ci/ios_debug_unopt_sim_arm64 builder of flutter/flutter does, and uploads
 # the simulator Flutter.framework for local simulator tests.
 #
+# A second job builds the arm64 device engine in profile mode and uploads its
+# Flutter.framework, packaged like the ios-arm64 slice of the official
+# ios-profile Flutter.xcframework (unstripped, no dSYM). The Dart VM is
+# unchanged, so the official gen_snapshot of the same engine revision stays
+# in use. Set the device input to false to skip that job.
+#
 # Compiles go through ccache, kept in the Actions cache. GitHub deletes a
 # cache that is not used for 7 days, so a later run may start cold again.
 name: Speakblend iOS simulator engine
 
 on:
   workflow_dispatch:
+    inputs:
+      device:
+        description: Also build the arm64 device engine in profile mode
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -171,3 +182,162 @@ jobs:
           name: ios-embedding-test-outputs
           path: ${{ runner.temp }}/test-outputs
           if-no-files-found: ignore
+
+  build_device:
+    name: ios_profile
+    if: ${{ inputs.device }}
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      DEPOT_TOOLS_UPDATE: '0'
+      DEPOT_TOOLS_METRICS: '0'
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      # The compiler comes from DEPS, whose hash is part of the cache key.
+      CCACHE_COMPILERCHECK: none
+      # A fresh checkout gives every header a new mtime.
+      CCACHE_SLOPPINESS: include_file_ctime,include_file_mtime,time_macros
+      CCACHE_MAXSIZE: 4G
+      VARIANT: ios_profile
+    steps:
+      - name: Select Xcode 26
+        run: |
+          ls -d /Applications/Xcode*.app
+          xcode=$(ls -d /Applications/Xcode_26.2*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$xcode" ]; then
+            xcode=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          fi
+          # Some names are symlinks; the cleanup below must keep the real app.
+          xcode=$(realpath "$xcode")
+          echo "Using $xcode"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+          echo "SELECTED_XCODE=$xcode" >> "$GITHUB_ENV"
+
+      - name: Free disk space
+        run: |
+          df -h /
+          for app in /Applications/Xcode*.app; do
+            if [ ! -L "$app" ] && [ "$(realpath "$app")" != "$SELECTED_XCODE" ]; then
+              sudo rm -rf "$app"
+            fi
+          done
+          # The device build needs the iPhoneOS SDK of the selected Xcode.
+          xcrun --sdk iphoneos --show-sdk-path
+          sudo rm -rf "$HOME/Library/Android" /usr/local/lib/android || true
+          for tool in CodeQL go Ruby PyPy node; do
+            sudo rm -rf "$AGENT_TOOLSDIRECTORY/$tool" || true
+          done
+          sudo rm -rf "$HOME/Library/Developer/CoreSimulator/Caches" || true
+          df -h /
+
+      - name: Install Rosetta
+        run: sudo softwareupdate --install-rosetta --agree-to-license || true
+
+      - uses: actions/checkout@v4
+        with:
+          path: flutter
+          fetch-depth: 1
+
+      - name: Install depot_tools and ccache
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$RUNNER_TEMP/depot_tools"
+          echo "$RUNNER_TEMP/depot_tools" >> "$GITHUB_PATH"
+          brew install ccache
+          ccache --version | head -1
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ccache
+          key: ccache-${{ env.VARIANT }}-${{ hashFiles('flutter/DEPS') }}-${{ github.run_id }}
+          restore-keys: ccache-${{ env.VARIANT }}-${{ hashFiles('flutter/DEPS') }}-
+
+      - name: gclient sync
+        working-directory: flutter
+        run: |
+          cat > .gclient <<'EOF'
+          solutions = [
+            {
+              "custom_deps": {},
+              "deps_file": "DEPS",
+              "managed": False,
+              "name": ".",
+              "safesync_url": "",
+              "url": "https://github.com/flutter/flutter.git",
+              "custom_vars": {
+                "download_android_deps": False,
+                "download_esbuild": False,
+                "setup_githooks": False,
+              },
+            },
+          ]
+          EOF
+          gclient sync -D --no-history --jobs 8
+          df -h /
+
+      - name: gn
+        working-directory: flutter/engine/src
+        run: |
+          ./flutter/tools/gn --ios --runtime-mode profile --no-rbe --ccache \
+            --target-dir "$VARIANT"
+
+      - name: ninja
+        working-directory: flutter/engine/src
+        run: |
+          # DEPS puts ninja under the gclient root, not under engine/src.
+          ninja="$GITHUB_WORKSPACE/flutter/third_party/ninja/ninja"
+          if [ ! -x "$ninja" ]; then
+            ninja=$(find "$GITHUB_WORKSPACE/flutter" -path '*third_party/ninja/ninja' -type f | head -1)
+          fi
+          ccache --zero-stats
+          "$ninja" -j 4 -C "out/$VARIANT" \
+            flutter/shell/platform/darwin/ios:flutter_framework
+          ccache --show-stats
+          df -h /
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .ccache
+          key: ccache-${{ env.VARIANT }}-${{ hashFiles('flutter/DEPS') }}-${{ github.run_id }}
+
+      - name: Package device framework
+        run: |
+          set -euo pipefail
+          out="flutter/engine/src/out/$VARIANT"
+          dist="$GITHUB_WORKSPACE/dist"
+          mkdir -p "$dist"
+          binary="$out/Flutter.framework/Flutter"
+          test -f "$out/Flutter.framework/Info.plist"
+          lipo -info "$binary"
+          # The ios-arm64 slice of the xcframework holds a thin arm64 binary.
+          if [ "$(lipo -archs "$binary")" != arm64 ]; then
+            echo "Expected a thin arm64 binary." >&2
+            exit 1
+          fi
+          (cd "$out" && ditto -c -k --keepParent Flutter.framework "$dist/Flutter.framework-$VARIANT.zip")
+          {
+            echo "variant: $VARIANT"
+            echo "commit: ${GITHUB_SHA}"
+            echo "dart_revision: $(sed -n "s/^ *'dart_revision': '\([0-9a-f]*\)'.*/\1/p" flutter/DEPS)"
+            echo "xcode: $(xcodebuild -version | tr '\n' ' ')"
+            echo "lipo: $(lipo -info "$binary")"
+            echo "binary_size: $(wc -c < "$binary" | tr -d ' ')"
+            echo "binary_sha256: $(shasum -a 256 "$binary" | cut -d' ' -f1)"
+            echo "gn_args:"
+            sed 's/^/  /' "$out/args.gn"
+            echo "files:"
+            (cd "$out/Flutter.framework" && find . -type f | sort)
+          } > "$dist/manifest-$VARIANT.txt"
+          cat "$dist/manifest-$VARIANT.txt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flutter-${{ env.VARIANT }}
+          path: dist/*
+          if-no-files-found: error
