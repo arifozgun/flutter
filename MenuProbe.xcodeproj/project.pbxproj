@@ -24,6 +24,8 @@
 		AA0000000000000000000125 /* LookUpInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000235 /* LookUpInputView.swift */; };
 		AA0000000000000000000126 /* LookUpViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000236 /* LookUpViewController.swift */; };
 		AA0000000000000000000127 /* LookUpProbeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000237 /* LookUpProbeUITests.swift */; };
+		AA0000000000000000000128 /* InteractionLeakViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000238 /* InteractionLeakViewController.swift */; };
+		AA0000000000000000000129 /* InteractionLeakProbeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000239 /* InteractionLeakProbeUITests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -57,6 +59,8 @@
 		AA0000000000000000000235 /* LookUpInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookUpInputView.swift; sourceTree = "<group>"; };
 		AA0000000000000000000236 /* LookUpViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookUpViewController.swift; sourceTree = "<group>"; };
 		AA0000000000000000000237 /* LookUpProbeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LookUpProbeUITests.swift; sourceTree = "<group>"; };
+		AA0000000000000000000238 /* InteractionLeakViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionLeakViewController.swift; sourceTree = "<group>"; };
+		AA0000000000000000000239 /* InteractionLeakProbeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InteractionLeakProbeUITests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -102,6 +106,7 @@
 				AA0000000000000000000233 /* AutocorrectViewController.swift */,
 				AA0000000000000000000235 /* LookUpInputView.swift */,
 				AA0000000000000000000236 /* LookUpViewController.swift */,
+				AA0000000000000000000238 /* InteractionLeakViewController.swift */,
 				AA0000000000000000000208 /* Info.plist */,
 			);
 			path = MenuProbe;
@@ -114,6 +119,7 @@
 				AA0000000000000000000212 /* FlutterMenuUITests.swift */,
 				AA0000000000000000000234 /* AutocorrectProbeUITests.swift */,
 				AA0000000000000000000237 /* LookUpProbeUITests.swift */,
+				AA0000000000000000000239 /* InteractionLeakProbeUITests.swift */,
 			);
 			path = MenuProbeUITests;
 			sourceTree = "<group>";
@@ -238,6 +244,7 @@
 				AA0000000000000000000123 /* AutocorrectViewController.swift in Sources */,
 				AA0000000000000000000125 /* LookUpInputView.swift in Sources */,
 				AA0000000000000000000126 /* LookUpViewController.swift in Sources */,
+				AA0000000000000000000128 /* InteractionLeakViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -249,6 +256,7 @@
 				AA0000000000000000000112 /* FlutterMenuUITests.swift in Sources */,
 				AA0000000000000000000124 /* AutocorrectProbeUITests.swift in Sources */,
 				AA0000000000000000000127 /* LookUpProbeUITests.swift in Sources */,
+				AA0000000000000000000129 /* InteractionLeakProbeUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

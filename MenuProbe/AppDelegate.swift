@@ -103,6 +103,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             self.window = window
             return
         }
+        // `-ilVariant <id>`: the interaction leak probe.
+        if let id = UserDefaults.standard.string(forKey: "ilVariant"), let ilVariant = ILVariant.named(id) {
+            Probe.tag = "il-\(ilVariant.id)"
+            Probe.event("launch \(Probe.tag) iOS \(UIDevice.current.systemVersion)")
+            let window = UIWindow(windowScene: windowScene)
+            window.rootViewController = InteractionLeakViewController(variant: ilVariant)
+            window.makeKeyAndVisible()
+            self.window = window
+            return
+        }
         // `-acVariant <id>`: the autocorrect harness instead of a menu variant.
         if let id = UserDefaults.standard.string(forKey: "acVariant"), let acVariant = ACVariant.named(id) {
             Probe.tag = "ac-\(acVariant.id)"

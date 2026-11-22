@@ -760,3 +760,109 @@ resolution), the menus UIKit built are in `-menus.txt`.
   accessibility: `firstResponder=unreadable` while the sheet is open is normal.
   The state timeline in `trees/` does not depend on that.
 - `ACInputView` is not the engine's view (no Flutter view behind it).
+
+# Interaction leak probe
+
+A fifth harness, in the UIKit probe app. A Flutter engine prototype attaches a
+new `UITextInteraction` to its custom `UITextInput` view right before each edit
+menu is presented and removes it (`removeInteraction`) when the menu's
+dismissal animation completes. `view.interactions.count`, read right after each
+attach, grows by 2 with every menu on the same view (22, 24, 26, ... 60 after
+20 menus; iOS 26.2 simulator, similar on iPad and iOS 17.5). So two
+interactions stay on the view after each removal. Which classes are they, and
+which way of adding and removing avoids it?
+
+`MenuProbeUITests/InteractionLeakProbeUITests.swift` (a class in the existing UI
+test target); the app side is `InteractionLeakViewController.swift` (launch
+argument `-ilVariant <id>`). Workflow: `interaction-leak-probe.yml`, dispatch
+only.
+
+## Variants
+
+Each variant uses the Look Up harness's custom view (`LUInputView`, the
+engine's zero-sized layout), first responder with the keyboard up and "harbor"
+selected, and runs 10 cycles inside the app. The UI test only launches the
+variant, waits for `phase=done` and copies the app's result line.
+
+| Test | Variant | One cycle |
+| --- | --- | --- |
+| `test_01_add_remove` | `v1-add-remove` | Add a new `UITextInteraction(for: .editable)` (`textInput` = the view), remove it at once. No menu. |
+| `test_02_add_wait_remove` | `v2-add-wait-remove` | Add a new interaction, wait 1 s, remove it. No menu. |
+| `test_03_nil_then_remove` | `v3-nil-then-remove` | Add a new interaction, set `interaction.textInput = nil` (the engine's workaround for a nil input delegate), remove it. No menu. |
+| `test_04_reuse_object` | `v4-reuse-object` | One interaction object, created once, added and removed in every cycle. No menu. |
+| `test_05_menu_cycle` | `v5-menu-cycle` | The prototype: add a new interaction, present the edit menu for the selected word (`UIEditMenuInteraction`, suggested menu unchanged), wait 1.2 s, `dismissMenu()`, remove the interaction in the completion of the dismissal animator. |
+| `test_06_menu_cycle_reuse` | `v6-menu-cycle-reuse` | As v5 with one interaction object for all cycles. |
+| `test_07_menu_only` | `v7-menu-only` | Control: present and dismiss the menu, no text interaction. Does the menu itself add interactions? |
+| `test_08_permanent` | `v8-permanent` | Control: one interaction attached before the first menu and never removed; 10 menu cycles. |
+
+Adding and removing go through `ACInputView.attachMenuInteraction` /
+`detachMenuInteraction` (the Look Up harness's v4 path: the interaction's
+delegate is the view, and the keyboard's `inputDelegate` is kept while
+`addInteraction` / `removeInteraction` run). Menu variants wait for
+`willPresentMenuFor` (3 s at most) and for the dismissal completion (4 s at
+most); a menu that did not appear or a completion that never came is reported
+in `menuShown`, `menuDismissed` and `notes`. `willPresentMenuFor` is the only
+evidence that the menu appeared; the probe takes no screenshots.
+
+## Dispatching a run
+
+```
+gh workflow run interaction-leak-probe.yml --ref speakblend/menu-probe
+gh workflow run interaction-leak-probe.yml --ref speakblend/menu-probe -f ios=26
+gh workflow run interaction-leak-probe.yml --ref speakblend/menu-probe -f ios=17.5 -f tests="test_01_add_remove test_05_menu_cycle"
+```
+
+No inputs = every test on an iPhone simulator with iOS 26, 18.6 and 17.5
+(three jobs, `macos-15`). A push of the workflow's own file starts a run whose
+job is skipped; that only registers the workflow. Artifact (small: no
+`.xcresult`, no video, no screenshots): `interaction-leak-probe-ios<version>`
+with `summary.txt`, `trees/` (the app's records), `app-log.txt`, `runner.txt`
+and `xcodebuild-tail.txt`.
+
+## Reading the summary
+
+`summary.txt`, one line per variant:
+`il-<id> | device=iphone | ios=<v> | cycles=<n>/10 | before=<n> | afterAdd=[...] | after=[...] | settled=<n> | classesBefore=[...] | classesAfter=[...] | leftover=[...] | settledLeftover=[...] | gesturesBefore=<n> | gesturesAfter=[...] | gesturesSettled=<n> | gestureClassesBefore=[...] | gestureClassesAfter=[...] | gestureLeftover=[...] | leftoverInteractions=[...] | leftoverGestures=[...] | menuShown=[...] | menuDismissed=[...] | end=[...] | notes=[...]`.
+
+- `before`: `view.interactions.count` before the first cycle (the view's own
+  `UIEditMenuInteraction` and whatever UIKit added are in it). For v8 it is
+  read before the permanent interaction is attached, so that interaction and
+  its gesture recognizers show up as the leftover.
+- `afterAdd`: the count right after each add (what the prototype measured);
+  empty for v7 and v8.
+- `after`: the count after each cycle's removal; for v7 and v8 (no removal)
+  after the dismissal completed. `settled`: the count 2 s after the last cycle.
+- `classesBefore`, `classesAfter`: the multiset of class names
+  (`UITextInteraction×1, _UIFoo×2`) before the first cycle and after the last
+  one. `leftover`: the classes whose number differs, `Name×+2` or `Name×-1`;
+  `settledLeftover` the same 2 s later.
+- `gesturesBefore`, `gesturesAfter`, `gestureClassesBefore`,
+  `gestureClassesAfter`, `gestureLeftover`: the same for
+  `view.gestureRecognizers`.
+- `leftoverInteractions`, `leftoverGestures`: the first four objects that are
+  on the view after the last cycle and were not there before the first one:
+  class, `view===view:<interaction.view === the input view>`, `ours:<is the
+  probe's own interaction object>` (interactions only) or
+  `enabled`/`delegate` class (gesture recognizers), and the first characters of
+  `String(describing:)`. `trees/il-<id>-leftovers.txt` has all of them, also
+  for the settled state.
+- `menuShown`, `menuDismissed`: per cycle, whether `willPresentMenuFor` and the
+  dismissal completion came (empty for v1 to v4). `end`: first responder and
+  keyboard after the last cycle.
+
+Per variant the app also writes, under `trees/`, `il-<id>-steps.txt`: one line
+for every step of every cycle (`before`, `added`, `waited`, `textInputNil`,
+`removed`, `idle`, `presentRequested`, `presented`, `dismissRequested`,
+`dismissCompleted`, `settled`, ...) with the count, the class multiset, the
+gesture recognizer count and classes, the input delegate, first responder and
+the number of windows.
+
+## Limits
+
+- `LUInputView` is not the engine's view (no Flutter view behind it, no
+  scribble interaction, no autofill). The interaction is created with the view
+  as delegate; whether the engine does the same is not reproduced here.
+- Class names come from `String(describing: type(of:))`; private classes print
+  under their runtime names.
+- Cycle timing is fixed (1.2 s menu, 0.8 s idle between cycles), not tuned to
+  the animations.

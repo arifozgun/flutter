@@ -1,0 +1,278 @@
+# Runs only the interaction leak probe of the UIKit probe app
+# (MenuProbeUITests/InteractionLeakProbeUITests) on iPhone simulators with iOS
+# 26, 18.6 and 17.5: a custom UITextInput view that gets a new UITextInteraction
+# before each edit menu and loses it again keeps two interactions per menu. Which
+# classes stay on the view, and which way of adding and removing avoids it? Eight
+# variants, 10 cycles each, run inside the app. Dispatch only. Uploads a small
+# artifact: the summary and the app's records. No xcresult, no video, no
+# screenshots, also when a test fails. See README.md ("Interaction leak probe").
+name: Interaction leak probe
+
+on:
+  # The push run does nothing (the job is skipped). It only makes this workflow
+  # known to GitHub, so that it can be dispatched from a branch that is not the
+  # default branch.
+  push:
+    branches: [speakblend/menu-probe]
+    paths: ['.github/workflows/interaction-leak-probe.yml']
+  workflow_dispatch:
+    inputs:
+      ios:
+        description: 'iOS version to run; all = 26, 18.6 and 17.5'
+        required: false
+        type: choice
+        options: [all, '26', '18.6', '17.5']
+        default: all
+      tests:
+        description: 'Test methods to run, separated by spaces (for example "test_01_add_remove test_05_menu_cycle"); empty = all'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    name: iOS ${{ matrix.ios }}
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        ios: ['26', '18.6', '17.5']
+        # A value that is not selected is excluded; a selected one is "none",
+        # which matches no entry.
+        exclude:
+          - ios: ${{ (inputs.ios == 'all' || inputs.ios == '26') && 'none' || '26' }}
+          - ios: ${{ (inputs.ios == 'all' || inputs.ios == '18.6') && 'none' || '18.6' }}
+          - ios: ${{ (inputs.ios == 'all' || inputs.ios == '17.5') && 'none' || '17.5' }}
+    env:
+      # 26: Xcode 26 on the image, its newest iOS 26 runtime. 18.6 comes with
+      # the image under Xcode 16, 17.5 is downloaded.
+      WANT_XCODE: ${{ matrix.ios == '26' && '26' || '16' }}
+      WANT_IOS: ${{ matrix.ios }}
+      WANT_DEVICE: iphone
+      OUT: ${{ github.workspace }}/out
+      TESTS: ${{ inputs.tests }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the inputs
+        run: |
+          mkdir -p "$OUT"
+          case "$TESTS" in
+            *[!A-Za-z0-9_\ ]*) echo "tests may hold only letters, digits, _ and spaces"; exit 1 ;;
+          esac
+          {
+            echo "want xcode=$WANT_XCODE ios=$WANT_IOS device=$WANT_DEVICE tests=${TESTS:-all}"
+            sw_vers
+            df -h /
+          } 2>&1 | tee "$OUT/runner.txt"
+
+      - name: Select Xcode
+        run: |
+          # The newest installed release of the wanted major version.
+          xcode=$(python3 - <<'PY'
+          import glob, os, re
+          want = int(os.environ["WANT_XCODE"])
+          found = {}
+          for path in glob.glob("/Applications/Xcode_*.app"):
+              m = re.match(r"Xcode_(\d+(?:\.\d+)*)(.*)\.app$", os.path.basename(path))
+              if not m:
+                  continue
+              version = tuple(int(x) for x in m.group(1).split("."))
+              if version[0] != want:
+                  continue
+              beta = "beta" in m.group(2).lower() or "rc" in m.group(2).lower()
+              real = os.path.realpath(path)
+              key = (0 if beta else 1, version)
+              if real not in found or key > found[real][0]:
+                  found[real] = (key, path)
+          if found:
+              print(max(found.values())[1])
+          PY
+          )
+          if [ -z "$xcode" ]; then
+            echo "No Xcode $WANT_XCODE on this image"
+            exit 1
+          fi
+          sudo xcode-select -s "$xcode"
+          {
+            echo "selected $xcode"
+            xcodebuild -version
+            xcrun simctl list runtimes
+          } 2>&1 | tee -a "$OUT/runner.txt"
+
+      - name: Download the iOS runtime
+        run: |
+          if xcrun simctl list runtimes -j | python3 -c '
+          import json, os, sys
+          wanted = os.environ["WANT_IOS"]
+          sys.exit(0 if any(
+              r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+              and r.get("isAvailable")
+              and (r["version"] == wanted or r["version"].startswith(wanted + "."))
+              for r in json.load(sys.stdin)["runtimes"]) else 1)
+          '; then
+            echo "iOS $WANT_IOS is already installed"
+            exit 0
+          fi
+          build_version=()
+          case "$WANT_IOS" in
+            *.*) build_version=(-buildVersion "$WANT_IOS") ;;
+          esac
+          # Apple's download server sometimes drops the connection.
+          for attempt in 1 2 3; do
+            xcodebuild -downloadPlatform iOS "${build_version[@]}" && break
+            if [ "$attempt" = 3 ]; then
+              exit 1
+            fi
+            sleep 30
+          done
+          xcrun simctl list runtimes
+
+      - name: Create and boot the simulator
+        run: |
+          # The device type is picked as in flutter-menu.yml: the first
+          # preferred type the runtime supports, else the last single-display
+          # type of the family.
+          read -r runtime version device < <(xcrun simctl list runtimes -j | python3 -c '
+          import json, os, re, sys
+          want = os.environ["WANT_IOS"]
+          runtimes = [r for r in json.load(sys.stdin)["runtimes"]
+                      if r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
+                      and r.get("isAvailable")
+                      and (r["version"] == want or r["version"].startswith(want + "."))]
+          if not runtimes:
+              sys.exit(0)
+          ipad = os.environ.get("WANT_DEVICE") == "ipad"
+          prefix = "com.apple.CoreSimulator.SimDeviceType."
+          names = (["iPad-Air-11-inch-M3", "iPad-Air-11-inch-M4", "iPad-Air-11-inch-M2", "iPad-Pro-11-inch-M5",
+                    "iPad-Pro-11-inch-M4-8GB", "iPad-10th-generation"] if ipad else
+                   ["iPhone-17-Pro", "iPhone-17", "iPhone-16-Pro", "iPhone-16", "iPhone-15-Pro", "iPhone-15"])
+          def choice(runtime):
+              types = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
+                       if d.get("productFamily") == ("iPad" if ipad else "iPhone")]
+              preferred = next((prefix + name for name in names if prefix + name in types), "")
+              single = [t for t in types if not re.search(r"Duo|Fold|Flip", t)]
+              return preferred, preferred or (single[-1] if single else "")
+          def rank(runtime):
+              preferred, device = choice(runtime)
+              general = re.fullmatch(r"com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+", runtime["identifier"])
+              return (bool(device), bool(preferred), bool(general),
+                      tuple(int(x) for x in runtime["version"].split(".")))
+          runtime = max(runtimes, key=rank)
+          print(runtime["identifier"], runtime["version"], choice(runtime)[1])
+          ') || true
+          if [ -z "${runtime:-}" ] || [ -z "${device:-}" ]; then
+            echo "No usable iOS $WANT_IOS runtime or $WANT_DEVICE device type"
+            xcrun simctl list runtimes
+            xcrun simctl list devicetypes
+            exit 1
+          fi
+          echo "Runtime $runtime ($version) on $device" | tee -a "$OUT/runner.txt"
+          udid=$(xcrun simctl create interaction-leak-probe "$device" "$runtime")
+          xcrun simctl boot "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          # The first keyboard on a new simulator shows a slide-to-type introduction.
+          xcrun simctl spawn "$udid" defaults write com.apple.keyboard.preferences \
+            DidShowContinuousPathIntroduction -bool true
+          xcrun simctl status_bar "$udid" override --time 9:41 || true
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          echo "IOS_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Run the interaction leak tests
+        run: |
+          only=(-only-testing:MenuProbeUITests/InteractionLeakProbeUITests)
+          if [ -n "$TESTS" ]; then
+            only=()
+            for name in $TESTS; do
+              only+=("-only-testing:MenuProbeUITests/InteractionLeakProbeUITests/$name")
+            done
+          fi
+          status=0
+          # TEST_RUNNER_ variables reach the UI test runner without the prefix;
+          # the test passes PROBE_OUT on to the app. The log and the result
+          # bundle stay out of the artifact.
+          TEST_RUNNER_PROBE_OUT="$OUT" xcodebuild test \
+            -project MenuProbe.xcodeproj \
+            -scheme MenuProbe \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -resultBundlePath "$RUNNER_TEMP/InteractionLeak.xcresult" \
+            "${only[@]}" \
+            -parallel-testing-enabled NO \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 600 \
+            CODE_SIGN_IDENTITY=- \
+            > "$RUNNER_TEMP/xcodebuild.log" 2>&1 || status=$?
+          {
+            grep -E "Test Case|error:|failed|passed|\*\*" "$RUNNER_TEMP/xcodebuild.log" | tail -150 || true
+            echo "xcodebuild exit status $status"
+          } | tee "$OUT/xcodebuild-tail.txt"
+          exit "$status"
+
+      - name: Collect the app log
+        if: always()
+        run: |
+          if [ -n "${UDID:-}" ]; then
+            xcrun simctl spawn "$UDID" log show --style syslog --info --debug --last 3h \
+              --predicate 'subsystem == "dev.probe.editmenu"' > "$OUT/app-log.txt" 2>&1 || true
+          fi
+          ls -R "$OUT" > "$RUNNER_TEMP/files.txt" 2>&1 || true
+          cp "$RUNNER_TEMP/files.txt" "$OUT/files.txt" || true
+
+      - name: Write the job summary
+        if: always()
+        run: |
+          {
+            echo "## Interaction leak probe, iOS ${IOS_VERSION:-$WANT_IOS}, $WANT_DEVICE, Xcode $WANT_XCODE"
+            echo '```'
+            grep -E "^selected|^Xcode [0-9]|^Runtime" "$OUT/runner.txt" || true
+            echo '```'
+            echo "### interactions on the view: before, after each cycle, left over"
+            echo '```'
+            PYTHONIOENCODING=utf-8 python3 - "$OUT/summary.txt" <<'PY' || true
+          import re, sys
+          try:
+              lines = open(sys.argv[1], encoding="utf-8").read().splitlines()
+          except OSError:
+              print("(no summary.txt)")
+              sys.exit(0)
+
+          def grab(line, key):
+              m = re.search(r"\| " + re.escape(key) + r"=\[([^\]]*)\]", line)
+              return m.group(1) if m else "?"
+
+          def pick(line, key):
+              m = re.search(r"\| " + re.escape(key) + r"=(\S+)", line)
+              return m.group(1) if m else "?"
+
+          for line in lines:
+              name = line.split(" | ")[0]
+              print(f'{name:<28} before={pick(line, "before")} after=[{grab(line, "after")}] settled={pick(line, "settled")}')
+              print(f'{"":<28} leftover=[{grab(line, "leftover")}] gestureLeftover=[{grab(line, "gestureLeftover")}]')
+              shown = grab(line, "menuShown")
+              if shown not in ("", "?"):
+                  print(f'{"":<28} menuShown=[{shown}]')
+          PY
+            echo '```'
+            echo "### summary.txt"
+            echo '```'
+            head -c 300000 "$OUT/summary.txt" 2>/dev/null || echo "(no summary.txt)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: interaction-leak-probe-ios${{ matrix.ios }}
+          path: |
+            out/summary.txt
+            out/trees
+            out/app-log.txt
+            out/runner.txt
+            out/xcodebuild-tail.txt
+          if-no-files-found: warn
