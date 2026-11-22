@@ -34,6 +34,8 @@ SPECIAL = [
 # Keys that were renamed between versions of the harness.
 ALIASES = {'after 2 s': 'after tap'}
 MAX_VALUE = 300
+# The start of a result line: `<scenario> | ios=<version> | `.
+RESULT_LINE = re.compile(r'^\S+ \| ios=')
 
 
 def normalise(text):
@@ -120,13 +122,21 @@ def parse_line(line):
 def load(path):
     if os.path.isdir(path):
         path = os.path.join(path, 'summary.txt')
-    scenarios = {}
+    lines = []
     with open(path, encoding='utf-8') as handle:
         for line in handle:
             if not line.strip():
                 continue
-            scenario, fields = parse_line(line)
-            scenarios[scenario] = fields
+            # A result line that was split by a line break inside a label
+            # (older runs) continues in the next line(s); join them.
+            if lines and not RESULT_LINE.match(line):
+                lines[-1] = lines[-1].rstrip('\n') + ' ' + line
+            else:
+                lines.append(line)
+    scenarios = {}
+    for line in lines:
+        scenario, fields = parse_line(line)
+        scenarios[scenario] = fields
     return scenarios
 
 

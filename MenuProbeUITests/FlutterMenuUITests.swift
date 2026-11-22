@@ -188,6 +188,15 @@ final class FlutterMenuUITests: XCTestCase {
         return inFront(app)
     }
 
+    /// True while Safari is in front. A plain read of `state` can stay stale
+    /// for an app this test did not launch (on the iPad runs it said "not in
+    /// front" for the whole 6 s wait while Safari was on screen, and the probe
+    /// app still said "foreground", so its tree was queried and hung for 90 s
+    /// to 4 min). `wait(for:timeout:)` polls the state itself and refreshes it.
+    private func safariInFront(_ safari: XCUIApplication, wait: TimeInterval = 0.4) -> Bool {
+        safari.state == .runningForeground || safari.wait(for: .runningForeground, timeout: wait)
+    }
+
     /// Terminates Safari when it is running. True when it was.
     @discardableResult
     private func stopSafari() -> Bool {
@@ -251,7 +260,7 @@ final class FlutterMenuUITests: XCTestCase {
                 return "sized (page button tapped \(taps)x)"
             }
             let button = element(app, "probe-page")
-            if button.exists, !button.frame.isEmpty {
+            if dismissMenu(app).clear, button.exists, !button.frame.isEmpty {
                 tap(app, at: center(button.frame))
             }
             pause(1.2)
@@ -574,8 +583,14 @@ final class FlutterMenuUITests: XCTestCase {
                     break
                 }
             }
+            // The button can lie under the expanded menu (its Copy button on
+            // iOS 26), so no tap is sent while a menu is on screen.
+            let menu = dismissMenu(app)
+            if !menu.note.isEmpty {
+                extra.append(menu.note)
+            }
             let button = element(app, "probe-reset")
-            if button.exists, !button.frame.isEmpty {
+            if menu.clear, button.exists, !button.frame.isEmpty {
                 tap(app, at: center(button.frame))
             }
             pause(1.1)
@@ -594,13 +609,87 @@ final class FlutterMenuUITests: XCTestCase {
         return extra.joined(separator: ", ")
     }
 
-    /// A tap on the app's header text: it does nothing in the app, and it
-    /// dismisses a menu that is still shown.
-    private func tapBlank(_ app: XCUIApplication) {
+    /// A tap on the app's header text: it does nothing in the app. A menu that
+    /// is still shown is dismissed first (`dismissMenu`), so the tap cannot
+    /// land on a menu item; when the menu stays, nothing is tapped. Returns the
+    /// note of `dismissMenu`.
+    @discardableResult
+    private func tapBlank(_ app: XCUIApplication) -> String {
+        let menu = dismissMenu(app)
         let label = element(app, "supported")
-        if label.exists, !label.frame.isEmpty {
+        if menu.clear, label.exists, !label.frame.isEmpty {
             tap(app, at: center(label.frame))
             pause(0.8)
+        }
+        return menu.note
+    }
+
+    /// Dismisses an edit menu that is on screen, so that a tap aimed at an app
+    /// control cannot hit one of the menu's buttons (the expanded iOS 26 menu
+    /// has a Cut / Copy row over the header's buttons, and a Copy tap puts
+    /// Paste into every later menu). The dismissing tap goes to a point
+    /// outside the rows' frames (`menuSafePoints`); a menu swallows a tap
+    /// outside it. The menu is read again afterwards, and up to three points
+    /// are tried. `clear` is true when no menu is on screen at the end (also
+    /// when none was there at all, or the app is not in front). `note` is empty
+    /// when nothing had to be done.
+    private func dismissMenu(_ app: XCUIApplication) -> (clear: Bool, note: String) {
+        guard inFront(app) else { return (true, "") }
+        var nodes = snapshotNodes(app)
+        if nodes.isEmpty {
+            pause(0.5)
+            nodes = snapshotNodes(app)
+        }
+        var done: [String] = []
+        var tried: [CGPoint] = []
+        for _ in 1...3 {
+            let rows = menuRows(nodes)
+            if rows.isEmpty {
+                break
+            }
+            let points = menuSafePoints(nodes, rows: rows, app: app)
+            guard let point = points.first(where: { candidate in
+                !tried.contains { abs($0.x - candidate.x) < 1 && abs($0.y - candidate.y) < 1 }
+            }) else {
+                done.append("no safe point outside the menu")
+                break
+            }
+            tried.append(point)
+            tap(app, at: point)
+            done.append("tap at \(Int(point.x)),\(Int(point.y))")
+            pause(0.9)
+            nodes = snapshotNodes(app)
+        }
+        if done.isEmpty {
+            return (true, "")
+        }
+        let clear = menuRows(nodes).isEmpty
+        return (clear, "menu dismissed first (\(done.joined(separator: ", ")); gone=\(clear))")
+    }
+
+    /// Points for dismissing a menu: on the app's header text (its left end
+    /// first), then on the empty edges of the list. None lies near the menu's
+    /// rows, on one of the app's controls or fields, the status area or the
+    /// keyboard.
+    private func menuSafePoints(_ nodes: [Node], rows: [Node], app: XCUIApplication) -> [CGPoint] {
+        let screen = nodes.first?.frame ?? app.frame
+        let menu = rows.map(\.frame).reduce(CGRect.null) { $0.union($1) }.insetBy(dx: -30, dy: -30)
+        let keyboard = nodes.filter { $0.type == .keyboard }.map(\.frame)
+        let controls = nodes.filter { isOwn($0) && $0.identifier != "supported" && !$0.frame.isEmpty }
+            .map { $0.frame.insetBy(dx: -3, dy: -3) }
+        var candidates: [CGPoint] = []
+        if let header = nodes.first(where: { $0.identifier == "supported" && !$0.frame.isEmpty }) {
+            candidates.append(CGPoint(x: header.frame.minX + 8, y: header.frame.midY))
+            candidates.append(center(header.frame))
+            candidates.append(CGPoint(x: header.frame.maxX - 8, y: header.frame.midY))
+        }
+        for y in [0.3, 0.45, 0.6] {
+            candidates.append(CGPoint(x: screen.minX + 6, y: screen.minY + screen.height * y))
+            candidates.append(CGPoint(x: screen.maxX - 6, y: screen.minY + screen.height * y))
+        }
+        return candidates.filter { point in
+            screen.contains(point) && !menu.contains(point)
+                && !keyboard.contains { $0.contains(point) } && !controls.contains { $0.contains(point) }
         }
     }
 
@@ -667,7 +756,15 @@ final class FlutterMenuUITests: XCTestCase {
             if round > 1 {
                 recovery.append("round\(round) after \(result.how): \(recoverForSelection(app, reset: reset))")
             }
-            result = selectOnce(app, spec, word: word)
+            // The focus tap and the double taps go to the field; a menu that is
+            // still up (a scenario that keeps the app's state) could be hit.
+            let menu = dismissMenu(app)
+            if !menu.note.isEmpty {
+                recovery.append("round\(round): \(menu.note)")
+            }
+            result = menu.clear
+                ? selectOnce(app, spec, word: word)
+                : Selection(ok: false, how: "menu-not-dismissed", point: nil, status: readStatus(app))
             if result.ok {
                 break
             }
@@ -700,14 +797,18 @@ final class FlutterMenuUITests: XCTestCase {
         if closed != "nothing to dismiss" {
             done.append("closed: \(closed)")
         }
-        tapBlank(app)
-        done.append("tap blank")
+        let blank = tapBlank(app)
+        done.append(blank.isEmpty ? "tap blank" : "tap blank (\(blank))")
         if reset {
             let again = resetApp(app)
             done.append(again.isEmpty ? "reset" : "reset (\(again))")
         } else {
             let button = element(app, "probe-done")
-            if button.exists, !button.frame.isEmpty {
+            let menu = dismissMenu(app)
+            if !menu.note.isEmpty {
+                done.append(menu.note)
+            }
+            if menu.clear, button.exists, !button.frame.isEmpty {
                 tap(app, at: center(button.frame))
                 pause(1.0)
                 done.append("Done tapped (keyboard down, texts kept)")
@@ -952,14 +1053,23 @@ final class FlutterMenuUITests: XCTestCase {
     // MARK: - Helper: dismiss what a row opened
 
     /// A button that closes a sheet or card. The app's own Done button (it
-    /// puts the keyboard away) is not one.
+    /// puts the keyboard away) is not one, and neither is a key of the keyboard
+    /// (the return key of the app's fields is labelled "done"). The button
+    /// inside `probe-done` has no identifier of its own, so it is told apart by
+    /// its frame.
     private func closeButton(_ app: XCUIApplication) -> XCUIElement? {
         let predicate = NSPredicate(
             format: "(label ==[c] 'Done' OR label ==[c] 'Close' OR label ==[c] 'Cancel' OR label ==[c] 'Dismiss') "
                 + "AND identifier != 'probe-done'"
         )
-        let button = app.buttons.matching(predicate).firstMatch
-        return button.exists && button.isHittable ? button : nil
+        let own = element(app, "probe-done")
+        let ownFrame = own.exists ? own.frame : .null
+        let keyboard = app.keyboards.firstMatch
+        let keyboardFrame = keyboard.exists ? keyboard.frame : .null
+        return app.buttons.matching(predicate).allElementsBoundByIndex.first { button in
+            button.exists && button.isHittable
+                && !ownFrame.intersects(button.frame) && !keyboardFrame.intersects(button.frame)
+        }
     }
 
     /// True when the app's own screen is reachable (nothing covers it).
@@ -1246,13 +1356,38 @@ final class FlutterMenuUITests: XCTestCase {
     /// Markers of a sheet, a popover or a card that a row opened. The menu
     /// itself has none of them.
     private func sheetLike(_ nodes: [Node]) -> Bool {
-        nodes.contains { node in
+        sheetReason(nodes) != nil
+    }
+
+    /// Why the tree counts as a sheet, or nil. `marker`: an element that only a
+    /// sheet, popover or card has. `own-elements-gone+full-screen-container`:
+    /// the stock engine's Look Up sheet on iOS 27 is a full-height sheet whose
+    /// tree has none of the app's elements (19 nodes: a 402x812 container and a
+    /// "Toolbar" at y=62, nothing else). That counts when no element of the app
+    /// is left and a container that is not the window covers the screen's width
+    /// and most of its height from below the top edge. A tree with the app's
+    /// elements, or without such a container, is not one.
+    private func sheetReason(_ nodes: [Node]) -> String? {
+        let marker = nodes.contains { node in
             node.type == .sheet || node.type == .popover || node.type == .navigationBar
                 || node.label == "Sheet Grabber" || node.label == "dismiss popup"
                 || node.identifier == "PopoverDismissRegion" || node.identifier == "DDUIDone"
                 || node.identifier.hasPrefix("ShareSheet")
                 || (node.type == .button && ["close", "Close"].contains(node.label))
         }
+        if marker {
+            return "marker"
+        }
+        guard let screen = nodes.first?.frame, !screen.isEmpty, !nodes.contains(where: { isOwn($0) }) else {
+            return nil
+        }
+        let cover = nodes.contains { node in
+            node.type != .application && node.type != .window
+                && node.frame.width >= screen.width * 0.95
+                && node.frame.height >= screen.height * 0.6
+                && node.frame.minY > screen.minY + 1
+        }
+        return cover ? "own-elements-gone+full-screen-container" : nil
     }
 
     /// A sheet that still shows its progress indicator.
@@ -1263,6 +1398,7 @@ final class FlutterMenuUITests: XCTestCase {
     struct AfterTap {
         var outcome = "nothing-visible"
         var sheetLike = false
+        var sheetReason = ""
         var loading = false
         var foundAfter: TimeInterval?
         var polls = 0
@@ -1285,7 +1421,7 @@ final class FlutterMenuUITests: XCTestCase {
         while true {
             result.polls += 1
             let elapsed = Date().timeIntervalSince(begin)
-            if safari.state == .runningForeground {
+            if expectsSafari ? safariInFront(safari) : safari.state == .runningForeground {
                 result.outcome = "safari"
                 result.foundAfter = elapsed
                 break
@@ -1297,6 +1433,7 @@ final class FlutterMenuUITests: XCTestCase {
                 result.nodes = nodes
                 result.treeRead = true
                 result.sheetLike = sheetLike(nodes)
+                result.sheetReason = sheetReason(nodes) ?? ""
                 result.loading = sheetLoading(nodes)
                 if result.sheetLike {
                     result.outcome = "sheet"
@@ -1324,11 +1461,12 @@ final class FlutterMenuUITests: XCTestCase {
             // The sheet's content draws after its frame appears.
             pause(1.5)
         }
-        if safari.state != .runningForeground, inFront(app) {
+        if !(expectsSafari ? safariInFront(safari, wait: 1.0) : safari.state == .runningForeground), inFront(app) {
             if expectsSafari || result.outcome == "sheet" {
                 result.nodes = safely("snapshot after waiting", [Node]()) { snapshotNodes(app) }
                 result.treeRead = true
                 result.sheetLike = sheetLike(result.nodes)
+                result.sheetReason = sheetReason(result.nodes) ?? ""
                 result.loading = sheetLoading(result.nodes)
                 if expectsSafari, result.outcome != "safari" {
                     if result.sheetLike {
@@ -1350,7 +1488,7 @@ final class FlutterMenuUITests: XCTestCase {
     private func returnToApp(_ app: XCUIApplication) -> String {
         var done: [String] = []
         let safari = XCUIApplication(bundleIdentifier: Self.safariID)
-        if safari.state == .runningForeground || !inFront(app) {
+        if safariInFront(safari, wait: 1.0) || !inFront(app) {
             for attempt in 1...3 {
                 app.activate()
                 done.append("activate")
@@ -1410,6 +1548,9 @@ final class FlutterMenuUITests: XCTestCase {
             + "sheetLike=\(observed.sheetLike) outcome=\(observed.outcome)"
         line += " loading=\(observed.loading) foundAfter=\(observed.foundAfter.map { String(format: "%.1fs", $0) } ?? "never")"
         line += " polls=\(observed.polls)"
+        if !observed.sheetReason.isEmpty {
+            line += " sheetReason=\(observed.sheetReason)"
+        }
         notes.append(line)
         notes.append(observed.treeRead ? "labelsAfter=[\(texts.joined(separator: ", "))]" : "labelsAfter=[] (tree not read: the probe app was not in front)")
         saveScreenshot("\(scenario)-1-after-tap")
@@ -2109,8 +2250,13 @@ final class FlutterMenuUITests: XCTestCase {
             saveHierarchy("\(scenario)-\(name)-hierarchy", app, nodes: after)
         }
 
-        // 4. Typing on a Latin keyboard.
-        let focused = focusEnd(app, spec)
+        // 4. Typing on a Latin keyboard. The menu of step 3 may still be up;
+        // the tap in the field must not hit one of its items.
+        let leftover = dismissMenu(app)
+        if !leftover.note.isEmpty {
+            notes.append("4 \(leftover.note)")
+        }
+        let focused = leftover.clear && focusEnd(app, spec)
         let latin = focused && switchKeyboard(app, ime: false).ok
         let before = readStatus(app)
         let typed = typeText(app, "xyz")
@@ -2276,7 +2422,14 @@ final class FlutterMenuUITests: XCTestCase {
         appendSummary("\(scenario) | ios=\(iosVersion) | " + notes.joined(separator: " | "))
     }
 
-    private func appendSummary(_ line: String) {
+    /// A label can hold a line break (the iOS 18 share sheet has one), which
+    /// would split a result line and leave its `RESULT=` on the next line.
+    private func singleLine(_ text: String) -> String {
+        text.components(separatedBy: .newlines).joined(separator: " ")
+    }
+
+    private func appendSummary(_ rawLine: String) {
+        let line = singleLine(rawLine)
         let file = outDir.appendingPathComponent("summary.txt")
         let data = Data((line + "\n").utf8)
         if FileManager.default.fileExists(atPath: file.path), let handle = try? FileHandle(forWritingTo: file) {

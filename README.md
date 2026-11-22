@@ -340,10 +340,14 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
     stopped, the app relaunched). After the tap the scenario polls for up to 6 s
     (`polls=`): Safari in the foreground gives `outcome=safari`; a sheet-like
     state (sheet, popover, card, close button) that has stopped loading gives
-    `outcome=sheet`, and `foundAfter=` says when. Other outcomes: `left-the-app`,
+    `outcome=sheet`, and `foundAfter=` says when (`sheetReason=` names why:
+    `marker`, or `own-elements-gone+full-screen-container` for the stock
+    engine's Look Up sheet on iOS 27, whose tree has none of the app's
+    elements). Other outcomes: `left-the-app`,
     `menu-still-shown`, `nothing-visible`, `row-absent`. The app's element tree
     is read only while the app is in front, never for Search Web before the wait
-    is over; the screenshot `-1-after-tap` is taken after the wait. Then the
+    is over (Safari's state is polled with `wait(for:)`, because a plain read of
+    `state` stayed stale on the iPad runs); the screenshot `-1-after-tap` is taken after the wait. Then the
     app is brought back (`dismissedBy=`) and its status is read. An older line
     has `after 2 s:` where this has `after tap:`.
   - `edit-cutThenPaste`, `edit-copyThenPaste`, `edit-selectAll`: each step's
@@ -482,6 +486,14 @@ leftover menu or sheet, taps an empty spot, and resets the app (or, in a
 scenario that keeps the text, taps Done and focuses again). `Reset` itself is
 checked (`field=none` in the status) and repeated when a menu swallowed the tap.
 The recovery shows in the `select=` note.
+
+No tap aimed at an app control (Reset, Done, the page button, a field) is sent
+while an edit menu is on screen: the menu is dismissed first by a tap outside
+its rows, checked again, and a note `menu dismissed first (tap at x,y; gone=...)`
+is added to the recovery (the expanded iOS 26 menu has a Copy button over the
+Reset button; tapping it put Paste into every later menu). Taps in a field that
+are themselves the experiment (tap while the menu is shown, the cycles) are not
+guarded.
 
 ### The text input view's frame
 
