@@ -887,7 +887,7 @@ static void EditMenuDiagLog(UIView* view, NSString* format, ...) {
   // Attached only while a system edit menu that may hold UIKit's Look Up, Translate or Share rows
   // is shown. UIKit only offers these rows to a view with a text interaction, and validates them
   // again when one is tapped.
-  UITextInteraction* _editMenuTextInteraction API_AVAILABLE(ios(13.0));
+  UITextInteraction* _editMenuTextInteraction;
   // Counts edit menu presentations. Each presentation uses it as its configuration identifier, so
   // that the dismissal of an older menu does not detach the interaction a newer menu relies on.
   NSUInteger _editMenuPresentationCount;
@@ -1505,11 +1505,12 @@ static void EditMenuDiagLog(UIView* view, NSString* format, ...) {
   _hasPlaceholder = NO;
 }
 
-// Attaching a text interaction makes UIKit replace inputDelegate with the interaction's own, and
-// removing it sets inputDelegate to nil. For the edit menu's interaction both are ignored: the
-// keyboard keeps its own delegate, so it handles text and selection changes during and after the
-// menu as it does without one, for example it does not apply a pending autocorrection when the
-// selection moves. Other interactions, such as the one setTextInputState: adds, still set it.
+// UIKit sets inputDelegate when this view becomes first responder, and setTextInputState: reports
+// the framework's text and selection changes to it. Adding a UITextInteraction makes UIKit set
+// inputDelegate to the interaction's own delegate object instead. Assignments made while the edit
+// menu's interaction is added or removed are ignored, so these reports keep reaching the delegate
+// UIKit set for the first responder, while the menu is shown and after it. Other assignments,
+// including the ones for the interaction setTextInputState: adds, are applied.
 - (void)setInputDelegate:(id<UITextInputDelegate>)inputDelegate {
   EditMenuDiagLog(self, @"setInputDelegate %@ old=%@ new=%@ guard=%d menuInteractionAttached=%d",
                   _isChangingEditMenuTextInteraction ? @"ignored" : @"accepted",
