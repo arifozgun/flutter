@@ -6,8 +6,8 @@
 # MenuProbeUITests/FlutterMenuUITests.swift: menu shape, row taps, edit
 # commands, typing after a menu cycle, 20 menu cycles, selection changes,
 # autocorrection after a menu cycle, marked text from a Japanese or Chinese
-# keyboard, fields whose text input view has a size, and a showcase clip.
-# `scenarios` picks which of them run. Everything is uploaded, also when a
+# keyboard, fields whose text input view has a size, and a showcase clip
+# (recorded on its own as showcase.mp4). `scenarios` picks which of them run. Everything is uploaded, also when a
 # test fails. See README.md for how to read it.
 name: Flutter menu probe
 
@@ -95,13 +95,18 @@ jobs:
           # would skip everything, so unknown groups stop the job here.
           known=" shape rows edit typing cycles selectionChange autocorrect ime sized showcase "
           keyboards=false
+          showcase=false
           tokens=$(printf '%s' "$SCENARIOS" | tr ',' ' ')
           if [ -z "$(printf '%s' "$tokens" | tr -d ' ')" ]; then
             keyboards=true
+            showcase=true
           fi
           for token in $tokens; do
             case "$token" in
               all|ime|test_08_ime*) keyboards=true ;;
+            esac
+            case "$token" in
+              all|showcase|test_10_showcase) showcase=true ;;
             esac
             case "$token" in
               all|test_[0-9][0-9]_*) ;;
@@ -115,6 +120,8 @@ jobs:
           done
           # The IME scenarios need Japanese and Chinese keyboards on the simulator.
           echo "IME_KEYBOARDS=$keyboards" >> "$GITHUB_ENV"
+          # The showcase runs in a step of its own, with its own recording.
+          echo "SHOWCASE=$showcase" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v4
 
@@ -313,9 +320,15 @@ jobs:
       - name: Create and boot the simulator
         run: |
           # WANT_IOS is a major version (26: the newest 26.x runtime) or a full
-          # one (18.6, 17.5).
+          # one (18.6, 17.5). An image can also carry a runtime made for one
+          # device type (iOS-27-2-iPhone19-4: only the two-display iPhone Duo),
+          # so the runtime and the device type are chosen together: first a
+          # runtime that supports one of the preferred device types, then a
+          # general runtime (identifier iOS-<version> only), then the newest.
+          # Without a preferred type, the last type whose name does not say it
+          # has more than one display (Duo, Fold, Flip).
           read -r runtime version device < <(xcrun simctl list runtimes -j | python3 -c '
-          import json, os, sys
+          import json, os, re, sys
           want = os.environ["WANT_IOS"]
           runtimes = [r for r in json.load(sys.stdin)["runtimes"]
                       if r["identifier"].startswith("com.apple.CoreSimulator.SimRuntime.iOS-")
@@ -323,18 +336,24 @@ jobs:
                       and (r["version"] == want or r["version"].startswith(want + "."))]
           if not runtimes:
               sys.exit(0)
-          runtimes.sort(key=lambda r: tuple(int(x) for x in r["version"].split(".")))
-          runtime = runtimes[-1]
           ipad = os.environ.get("WANT_DEVICE") == "ipad"
-          iphones = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
-                     if d.get("productFamily") == ("iPad" if ipad else "iPhone")]
           prefix = "com.apple.CoreSimulator.SimDeviceType."
           names = (["iPad-Air-11-inch-M3", "iPad-Air-11-inch-M4", "iPad-Air-11-inch-M2", "iPad-Pro-11-inch-M5",
                     "iPad-Pro-11-inch-M4-8GB", "iPad-10th-generation"] if ipad else
                    ["iPhone-17-Pro", "iPhone-17", "iPhone-16-Pro", "iPhone-16", "iPhone-15-Pro", "iPhone-15"])
-          device = next((prefix + name for name in names if prefix + name in iphones),
-                        iphones[-1] if iphones else "")
-          print(runtime["identifier"], runtime["version"], device)
+          def choice(runtime):
+              types = [d["identifier"] for d in runtime.get("supportedDeviceTypes", [])
+                       if d.get("productFamily") == ("iPad" if ipad else "iPhone")]
+              preferred = next((prefix + name for name in names if prefix + name in types), "")
+              single = [t for t in types if not re.search(r"Duo|Fold|Flip", t)]
+              return preferred, preferred or (single[-1] if single else "")
+          def rank(runtime):
+              preferred, device = choice(runtime)
+              general = re.fullmatch(r"com\.apple\.CoreSimulator\.SimRuntime\.iOS-[0-9-]+", runtime["identifier"])
+              return (bool(device), bool(preferred), bool(general),
+                      tuple(int(x) for x in runtime["version"].split(".")))
+          runtime = max(runtimes, key=rank)
+          print(runtime["identifier"], runtime["version"], choice(runtime)[1])
           ') || true
           if [ -z "${runtime:-}" ] || [ -z "${device:-}" ]; then
             echo "No usable iOS $WANT_IOS runtime or $WANT_DEVICE device type"
@@ -392,11 +411,15 @@ jobs:
 
       - name: Run the menu tests
         run: |
-          xcrun simctl io "$UDID" recordVideo --codec=h264 --force "$OUT/recording.mp4" \
-            > "$OUT/record.log" 2>&1 &
-          recorder=$!
-          # The showcase scenario turns its wall-clock times into offsets in
-          # recording.mp4 with this (to within the recorder's start-up time).
+          . tools/start_recording.sh
+          recorder=""
+          if start_recording "$OUT/recording.mp4" "$OUT/record.log"; then
+            recorder=$RECORDER
+          else
+            echo "The screen recording did not start; see record.log"
+          fi
+          # When the recorder started (epoch seconds), for finding a time of
+          # summary.txt in recording.mp4.
           python3 -c 'import time; print("%.3f" % time.time())' > "$OUT/recording-start.txt"
           # An iPhone-only test runner on an iPad would run in compatibility mode.
           family=()
@@ -407,6 +430,7 @@ jobs:
           # Only the Flutter test class runs; the scheme also builds the UIKit
           # probe app that the test target depends on, which these tests do
           # not use. A scenario can take minutes, so the time allowance is wide.
+          # The showcase runs in the next step, with its own recording.
           TEST_RUNNER_PROBE_OUT="$OUT" TEST_RUNNER_FLUTTER_APP_BUNDLE_ID="$APP_ID" \
           TEST_RUNNER_PROBE_SCENARIOS="$SCENARIOS" xcodebuild test \
             -project MenuProbe.xcodeproj \
@@ -415,6 +439,7 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/dd" \
             -resultBundlePath "$OUT/FlutterMenu.xcresult" \
             -only-testing:MenuProbeUITests/FlutterMenuUITests \
+            -skip-testing:MenuProbeUITests/FlutterMenuUITests/test_10_showcase \
             -parallel-testing-enabled NO \
             -test-timeouts-enabled YES \
             -default-test-execution-time-allowance 900 \
@@ -422,9 +447,72 @@ jobs:
             CODE_SIGN_IDENTITY=- \
             "${family[@]}" \
             > "$OUT/xcodebuild.log" 2>&1 || status=$?
-          kill -INT "$recorder" || true
-          wait "$recorder" || true
+          if [ -n "$recorder" ]; then
+            kill -INT "$recorder" || true
+            wait "$recorder" || true
+          fi
           grep -E "Test Case|error:|failed|passed|\*\*" "$OUT/xcodebuild.log" | tail -120 || true
+          echo "xcodebuild exit status $status"
+          exit "$status"
+
+      - name: Record the showcase
+        # Also after failed menu tests; skipped when the selection leaves it out.
+        if: ${{ !cancelled() && env.SHOWCASE == 'true' && env.UDID != '' }}
+        run: |
+          . tools/start_recording.sh
+          rm -f "$OUT"/showcase-ready "$OUT"/showcase-recording "$OUT"/showcase-done "$OUT"/showcase-stopped
+          # The test (test_10_showcase) does its warm-up, sets up the opening
+          # picture and writes showcase-ready; this records from then on and
+          # answers showcase-recording. When the test writes showcase-done,
+          # the recording stops and showcase-stopped tells the test to end.
+          (
+            for _ in $(seq 1 1200); do
+              [ -f "$OUT/showcase-ready" ] && break
+              sleep 0.5
+            done
+            # Both files at once: the test ended without getting that far.
+            if [ ! -f "$OUT/showcase-ready" ] || [ -f "$OUT/showcase-done" ]; then
+              exit 0
+            fi
+            if ! start_recording "$OUT/showcase.mp4" "$OUT/showcase-record.log"; then
+              echo "the recorder did not start" >> "$OUT/showcase-record.log"
+              exit 0
+            fi
+            # The first frames take a moment after "Recording started".
+            sleep 1
+            date +%s > "$OUT/showcase-recording"
+            for _ in $(seq 1 1200); do
+              [ -f "$OUT/showcase-done" ] && break
+              sleep 0.5
+            done
+            kill -INT "$RECORDER" || true
+            wait "$RECORDER" || true
+            date +%s > "$OUT/showcase-stopped"
+          ) &
+          watcher=$!
+          family=()
+          if [ "$WANT_DEVICE" = ipad ]; then family=(TARGETED_DEVICE_FAMILY=1,2); fi
+          status=0
+          TEST_RUNNER_PROBE_OUT="$OUT" TEST_RUNNER_FLUTTER_APP_BUNDLE_ID="$APP_ID" \
+          TEST_RUNNER_PROBE_SCENARIOS=showcase xcodebuild test \
+            -project MenuProbe.xcodeproj \
+            -scheme MenuProbe \
+            -destination "id=$UDID" \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            -resultBundlePath "$OUT/Showcase.xcresult" \
+            -only-testing:MenuProbeUITests/FlutterMenuUITests/test_10_showcase \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 900 \
+            -maximum-test-execution-time-allowance 1800 \
+            CODE_SIGN_IDENTITY=- \
+            "${family[@]}" \
+            > "$OUT/showcase-xcodebuild.log" 2>&1 || status=$?
+          # A test that ended early never wrote showcase-done.
+          touch "$OUT/showcase-done" "$OUT/showcase-ready"
+          wait "$watcher" || true
+          cat "$OUT/showcase-record.log" 2>/dev/null || true
+          ls -l "$OUT/showcase.mp4" 2>/dev/null || echo "no showcase.mp4"
+          grep -E "Test Case|error:|\*\*" "$OUT/showcase-xcodebuild.log" | tail -20 || true
           echo "xcodebuild exit status $status"
           exit "$status"
 
@@ -445,6 +533,10 @@ jobs:
               --output-path "$OUT/attachments" > "$OUT/attachments-export.log" 2>&1 || true
             xcrun xcresulttool get test-results summary --path "$OUT/FlutterMenu.xcresult" \
               > "$OUT/test-summary.json" 2>&1 || true
+          fi
+          if [ -d "$OUT/Showcase.xcresult" ]; then
+            xcrun xcresulttool get test-results summary --path "$OUT/Showcase.xcresult" \
+              > "$OUT/showcase-test-summary.json" 2>&1 || true
           fi
           ls -R "$OUT" > "$OUT/files.txt" 2>&1 || true
           head -400 "$OUT/files.txt"

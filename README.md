@@ -220,7 +220,8 @@ horizontal, paged bar).
   Search Web, Share, *Custom B*) and `selectable` (`SelectableText`). All
   others use Flutter's default menu, which is the system menu on iOS when
   `SystemContextMenu.isSupported` (shown at the top of the screen). `Reset`
-  restores the texts and drops focus; `Done` only drops focus.
+  restores the texts and drops focus; `Done` only drops focus; `Sized`
+  (identifier `probe-page`) switches to the second page below, `Main` back.
   The status area at the bottom (identifier `status`) shows the focused field's
   id, text, selection base/extent and composing range. Its accessibility label
   also holds the rectangles of the selection and of every word in points, which
@@ -229,9 +230,10 @@ horizontal, paged bar).
   to `Documents/menu_probe_log.txt` (dart:io only), so results do not depend on
   accessibility. Every `change` line holds the field's whole
   `TextEditingValue`: text, selection and composing range.
-  Launched with the environment variable `PROBE_PAGE=sized` (the `sized`
-  scenarios set it), the app shows a second page instead, with one field per
-  configuration that gives the engine's text input view a different frame:
+  The second page (the `sized` scenarios tap `Sized`; a launch environment
+  cannot select it, because Dart's `Platform.environment` is empty on iOS; the
+  app's log has a `page=sized` line) has one field per configuration that
+  gives the engine's text input view a different frame:
   `sized-plain` (TextField's default `autofillHints`, an empty list),
   `sized-nohints` (`autofillHints: null`), `sized-email` (`[email]`), and an
   `AutofillGroup` with `sized-username` (`[username]`) and `sized-password`
@@ -293,6 +295,16 @@ Inputs:
   name gets `-ipad`.
 - `ios27`: `true` adds an iOS 27 job (newest 27.x runtime, Xcode 27) on the
   `xcode-27` image; off by default.
+
+The simulator's runtime and device type are chosen together: a runtime that
+supports one of the preferred device types (iPhone 17 Pro, 17, 16 Pro, ...; on
+iPad an 11-inch Air or Pro) first, then a general runtime over one made for a
+single device type (the `xcode-27` image has `iOS-27-2-iPhone19-4`, which only
+runs the two-display iPhone Duo), then the newest. Without a preferred type,
+the last type whose name does not say Duo, Fold or Flip. The choice is the
+`Runtime ... on ...` line of `runner.txt`. Should a device with more than one
+display still be chosen, the recordings use its primary display
+(`tools/start_recording.sh`).
 
 The workflow also has a push trigger on its own file; that run skips the job and
 only registers the workflow.
@@ -378,14 +390,20 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
     `runner.txt` show why, and the rest of the line proves nothing. A
     `<step>-retry` note means the first `kana` was not marked (typed as Latin)
     and the IME was brought up again. `toLatin:` switches back to a Latin
-    keyboard for the scenarios that follow. The app's log has the same values
+    keyboard for the scenarios that follow. The first globe tap on a new
+    simulator covers the keys with a card ("Quickly Change Keyboards",
+    Continue) that comes back at every globe tap until Continue is tapped;
+    `toIME:` and `toLatin:` tap it away and say so (`keyboard introduction
+    card: tap Continue, gone=true`). Before that was done, only the scenarios
+    that started on an IME keyboard left over from the one before reached it. The app's log has the same values
     with their times (`change field=single ... composing=a..b`).
   - `sized-plain`, `sized-nohints`, `sized-email`, `sized-username`: one field
     of the `sized` page each (`expectedFrame=` says which frame of the text
     input view it should give, `screen=` the screen size in points, which
     tells an iPad run). `1`: the word "harbor" selected, `collapsed=[...]`,
     `all=[...]`, `unrequested=[...]` (rows Flutter's default menu does not
-    ask for, such as Delete or Select: UIKit's own), and the expanded list
+    ask for, such as Delete or Select: UIKit's own), on iPad `assistantBar=`,
+    and the expanded list
     (iOS 26) or the pages (17/18). Separate lines
     `<field>-row-lookUp`, `-row-translate`, `-row-share` tap each row as the
     `rows` scenarios do (`outcome=sheet` when its sheet opened). `3a` to `3d`:
@@ -400,17 +418,30 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
     elements as far as the probe knows, so the screenshots of the `3x` steps
     are where they would show; an extra UIKit menu shows in `menu=` and
     `unrequested=`, and a tap taken by UIKit instead of Flutter shows as a
-    status that does not follow the tap. `exercised=yes` means the word was
-    selected with the menu shown in that field; `RESULT=page-not-shown`
-    means `PROBE_PAGE` did not reach the app.
-  - `showcase`: a slow, clean run for the screen recording: select "harbor",
-    the menu, one chevron tap (expanded list on iOS 26, next page on 17/18),
-    Look Up, its sheet closed, the menu again by a double tap, Copy. About 1.5
-    to 2 s between steps. `clipStart=`/`clipEnd=` are wall-clock times,
-    `clipFrom=`/`clipTo=` the same in seconds into `recording.mp4` (from
-    `recording-start.txt`, which the job writes as it starts the recorder;
-    good to about a second). Cut the clip with, for example,
-    `ffmpeg -ss <clipFrom> -to <clipTo> -i recording.mp4 -c copy showcase.mp4`.
+    status that does not follow the tap. `page=sized (page button tapped Nx)`
+    says how the page came up. `exercised=yes` means the word was selected
+    with the menu shown in that field; `RESULT=page-not-shown` means the page
+    button did not bring up the sized page (screenshot and hierarchy
+    `<field>-0-page-missing`).
+  - `showcase`: a slow, clean run recorded on its own as `showcase.mp4`:
+    select "harbor", the menu, one chevron tap (expanded list on iOS 26, next
+    page on 17/18), Look Up (on 17/18 the menu is shown again first, since
+    Look Up is on its first page), its sheet closed, the menu again by a
+    double tap, Copy. About 1.5 to 2 s between steps. It runs after the other
+    scenarios in a step of its own (its own `xcodebuild`, log
+    `showcase-xcodebuild.log`). First a warm-up that is not recorded: a Look
+    Up whose first-run card ("Look Up now shows personalized suggestions",
+    Continue) is tapped away (`warmUp lookUp ... firstRunCard=`). When the
+    warm-up could only get back to the app by a relaunch, Look Up is left out
+    of the clip (`3 Look Up left out`). Then the test sets up the opening
+    picture (no menu, the caret at the end of the field) and the workflow
+    records only from there to the closing picture (the caret at the end
+    again), each held about 1.5 s; the app stays in front until the recording
+    has stopped. The test and the workflow agree through files in the output
+    folder (`showcase-ready`, `-recording`, `-done`, `-stopped`).
+    `recording=started`, `recordingStopped=true` and `inApp=true` say that
+    the clip was recorded that way; `showcase-record.log` is the recorder's
+    output. `clipStart=`/`clipEnd=` are wall-clock times.
 - `screens/`: `<scenario>-<step>.png`, for example `shape-single-1-collapsed`,
   `shape-single-2-page2`, `shape-single-2-expanded`, `rows-lookUp-single-1-after-tap`,
   `typing-2c-typed-def`, `cycles-round20`, `selectionChange-2-after-drag`,
@@ -422,8 +453,9 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
 - `app-documents/menu_probe_log.txt`: the app's own log (`t=<epoch s>`, same
   clock as the `start=` and `at` times in `summary.txt`).
 - `app-log.txt`: the simulator's unified log for the app's process.
-- `recording.mp4`: the whole test run; `recording-start.txt` is when the
-  recorder was started (epoch seconds).
+- `recording.mp4`: the test run without the showcase; `recording-start.txt`
+  is when the recorder was started (epoch seconds). `showcase.mp4`: the
+  showcase clip (above).
 - `engine.txt`: for an engine run the manifest and slice info of the installed
   engine; always the app's bundle id and the checksum of the app's embedded
   `Flutter.framework`. `flutter-version.txt`, `flutter-build.log`, `runner.txt`
@@ -433,7 +465,15 @@ One artifact per job, `flutter-menu-ios<version>-<label>`:
 
 A scenario that cannot find what it needs records that (with a screenshot and
 the hierarchy) and returns; the other scenarios still run. Only a launch that
-never shows the app's first screen fails a test. Queries that could hang on an
+never shows the app's first screen fails a test. A launch that fails (one
+timed out after 40 s on an iPad runner) is tried once more; that writes a line
+`launch-retry-<test method> | ... | first attempt: <error> | RESULT=retried`.
+
+On an iPad the keyboard's shortcut bar (`SystemInputAssistantView`, above
+the keys) has Cut, Copy and Paste buttons while text is selected. They are
+not menu rows and are left out of every menu list and of `unrequested=`;
+`shape` and `sized` lines list them as `assistantBar=[...]` (only when the
+bar is there). Queries that could hang on an
 app in the background are avoided, and the ones that remain are wrapped so that
 a failure there is an expected one, not a failed test.
 

@@ -13,9 +13,11 @@ import 'package:flutter/semantics.dart';
 /// app's Documents folder. The XCUITests in this repository drive it by bundle
 /// id and read the status area through its semantics identifier.
 ///
-/// Launched with the environment variable `PROBE_PAGE=sized`, the screen shows
-/// other fields instead: one per autofill configuration that gives the engine's
-/// text input view a different frame (see [_ProbePageState._sizedFields]).
+/// The `Sized` button in the header (identifier `probe-page`) switches to a
+/// second page with other fields: one per autofill configuration that gives
+/// the engine's text input view a different frame (see
+/// [_ProbePageState._sizedFields]); `Main` switches back. A launch environment
+/// cannot select the page: Dart's `Platform.environment` is empty on iOS.
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   // Without this, Flutter only builds its semantics tree when an assistive
@@ -158,24 +160,28 @@ class _ProbePageState extends State<_ProbePage> {
     visible: 'field=none',
     semantic: 'field=none',
   ));
-  late final List<_Field> _fields;
+  late final List<_Field> _mainPage;
+  late final List<_Field> _sizedPage;
   _Field? _active;
   Timer? _timer;
   int _epoch = 0;
   String _lastCustom = '-';
 
-  /// The value of the `PROBE_PAGE` environment variable: `sized` or empty.
-  final String _page = Platform.environment['PROBE_PAGE'] ?? '';
+  /// The page on screen: `main` or `sized`.
+  String _page = 'main';
+
+  List<_Field> get _fields => _page == 'sized' ? _sizedPage : _mainPage;
 
   @override
   void initState() {
     super.initState();
-    _fields = _page == 'sized' ? _sizedFields() : _mainFields();
-    for (final f in _fields) {
+    _mainPage = _mainFields();
+    _sizedPage = _sizedFields();
+    for (final f in [..._mainPage, ..._sizedPage]) {
       f.controller.addListener(() => _onChanged(f));
       f.focusNode.addListener(() => _onFocus(f));
     }
-    _log.write('start page=${_page.isEmpty ? 'main' : _page} log=${_log.path}');
+    _log.write('start page=$_page log=${_log.path}');
     _timer = Timer.periodic(const Duration(milliseconds: 300), (_) => _refresh());
     WidgetsBinding.instance.addPostFrameCallback((_) => _refresh());
   }
@@ -264,7 +270,7 @@ class _ProbePageState extends State<_ProbePage> {
     _timer?.cancel();
     _scroll.dispose();
     _status.dispose();
-    for (final f in _fields) {
+    for (final f in [..._mainPage, ..._sizedPage]) {
       f.dispose();
     }
     super.dispose();
@@ -330,6 +336,18 @@ class _ProbePageState extends State<_ProbePage> {
     _lastCustom = '-';
     // A new key resets the SelectableText's own selection.
     setState(() => _epoch++);
+    if (_scroll.hasClients) {
+      _scroll.jumpTo(0);
+    }
+    _refresh();
+  }
+
+  /// Switches between the main page and the sized page, with no focus.
+  void _togglePage() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() => _page = _page == 'sized' ? 'main' : 'sized');
+    _active = null;
+    _log.write('page=$_page');
     if (_scroll.hasClients) {
       _scroll.jumpTo(0);
     }
@@ -505,6 +523,14 @@ class _ProbePageState extends State<_ProbePage> {
                 'SystemContextMenu.isSupported: $supported',
                 style: const TextStyle(fontSize: 12),
               ),
+            ),
+          ),
+          Semantics(
+            identifier: 'probe-page',
+            container: true,
+            child: TextButton(
+              onPressed: _togglePage,
+              child: Text(_page == 'sized' ? 'Main' : 'Sized'),
             ),
           ),
           Semantics(

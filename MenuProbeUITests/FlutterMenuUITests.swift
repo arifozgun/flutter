@@ -121,7 +121,7 @@ final class FlutterMenuUITests: XCTestCase {
         FieldSpec(id: "cupertino", word: "harbor", text: sentence),
         FieldSpec(id: "custom", word: "harbor", text: sentence),
         FieldSpec(id: "selectable", word: "harbor", text: sentence),
-        // The fields of the app's `sized` page (PROBE_PAGE=sized).
+        // The fields of the app's `sized` page (its page button).
         FieldSpec(id: "sized-plain", word: "harbor", text: sentence),
         FieldSpec(id: "sized-nohints", word: "harbor", text: sentence),
         FieldSpec(id: "sized-email", word: "harbor", text: sentence),
@@ -202,22 +202,77 @@ final class FlutterMenuUITests: XCTestCase {
         }
     }
 
+    /// Whether this test uses the app's `sized` page. The app always starts on
+    /// its main page (Dart's `Platform.environment` is empty on iOS, so a
+    /// launch environment cannot reach it); `showSizedPage` taps the app's page
+    /// button after every launch and relaunch.
+    private var sizedPage = false
+
+    /// While true, a failed launch is noted here instead of being recorded,
+    /// so that `launchWithRetry` can try once more. Set and read on the main
+    /// thread only (XCUIApplication reports from there).
+    nonisolated(unsafe) private var launchRetryArmed = false
+    nonisolated(unsafe) private var failedLaunch: String?
+
+    nonisolated override func record(_ issue: XCTIssue) {
+        if launchRetryArmed, issue.compactDescription.contains("Failed to launch") {
+            failedLaunch = issue.compactDescription
+            return
+        }
+        super.record(issue)
+    }
+
+    /// Launches the app; when the launch fails (on a runner it once timed out
+    /// after 40 s), it is tried once more after a pause. A retry is written
+    /// to summary.txt as `launch-retry-<test>`; a second failure is recorded.
+    private func launchWithRetry(_ app: XCUIApplication) {
+        failedLaunch = nil
+        launchRetryArmed = true
+        app.launch()
+        launchRetryArmed = false
+        guard let first = failedLaunch else { return }
+        failedLaunch = nil
+        pause(3.0)
+        app.launch()
+        let test = (name.split(separator: " ").last.map(String.init) ?? name)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-[]"))
+        summary("launch-retry-\(test)", ["first attempt: \(first)", "RESULT=retried (state=\(stateName(app.state)))"])
+    }
+
+    /// Shows the app's `sized` page when this test uses it: taps the page
+    /// button (`probe-page`) until the page's first field is there. Returns
+    /// what happened; empty when the test does not use the page.
+    @discardableResult
+    private func showSizedPage(_ app: XCUIApplication) -> String {
+        guard sizedPage else { return "" }
+        let field = element(app, "field-sized-plain")
+        for taps in 0..<3 {
+            if field.exists {
+                return "sized (page button tapped \(taps)x)"
+            }
+            let button = element(app, "probe-page")
+            if button.exists, !button.frame.isEmpty {
+                tap(app, at: center(button.frame))
+            }
+            pause(1.2)
+        }
+        return field.waitForExistence(timeout: 3) ? "sized (page button tapped 3x)" : "NOT shown (page button tapped 3x)"
+    }
+
     /// Starts the Flutter app and waits for its first frame (the `supported`
     /// line). Records the failure and returns nil when it never appears. Safari
     /// is stopped first and the app is relaunched, so that every scenario
-    /// starts from a clean state. `page` goes to the app as `PROBE_PAGE` (the
-    /// `sized` page); the same instance keeps it when it is relaunched.
-    private func launchApp(_ scenario: String, page: String? = nil) -> XCUIApplication? {
+    /// starts from a clean state. `sized: true` then switches to the app's
+    /// `sized` page, also after any later relaunch.
+    private func launchApp(_ scenario: String, sized: Bool = false) -> XCUIApplication? {
         continueAfterFailure = true
+        sizedPage = sized
         stopSafari()
         let app = XCUIApplication(bundleIdentifier: bundleID)
-        if let page {
-            app.launchEnvironment["PROBE_PAGE"] = page
-        }
         if app.state != .notRunning, app.state != .unknown {
             app.terminate()
         }
-        app.launch()
+        launchWithRetry(app)
         // The first frame of a debug build on a CI simulator can take a while.
         guard element(app, "supported").waitForExistence(timeout: 90) else {
             saveScreenshot("\(scenario)-0-launch-failed")
@@ -374,15 +429,35 @@ final class FlutterMenuUITests: XCTestCase {
     }
 
     private func isOwn(_ node: Node) -> Bool {
-        ["supported", "probe-reset", "probe-done", "status"].contains(node.identifier)
+        ["supported", "probe-page", "probe-reset", "probe-done", "status"].contains(node.identifier)
             || node.identifier.hasPrefix("field-")
     }
 
-    /// Visible elements whose label is a known menu title, outside the keyboard
-    /// and the app's own elements. A row usually shows up twice (the row and its
-    /// label), so labels repeat.
+    /// Indexes of the iPad keyboard's shortcut bar (`SystemInputAssistantView`,
+    /// above the keys and outside the keyboard element). With a selection its
+    /// left side has Cut, Copy and Paste buttons (`assistantUndo`,
+    /// `assistantRedo`, `assistantPaste:forEvent:`), which are not menu rows.
+    private func assistantBars(_ nodes: [Node]) -> Set<Int> {
+        Set(nodes.filter { $0.identifier == "SystemInputAssistantView" }.map(\.index))
+    }
+
+    /// The labels of the shortcut bar's buttons, as ` assistantBar=[...]`, or
+    /// empty when there is no bar (iPhone).
+    private func assistantBarField(_ nodes: [Node]) -> String {
+        let bars = assistantBars(nodes)
+        guard !bars.isEmpty else { return "" }
+        let buttons = nodes.filter { node in
+            node.type == .button && !node.label.isEmpty && node.ancestors.contains { bars.contains($0) }
+        }
+        return " assistantBar=[\(labels(buttons))]"
+    }
+
+    /// Visible elements whose label is a known menu title, outside the keyboard,
+    /// the iPad keyboard's shortcut bar and the app's own elements. A row
+    /// usually shows up twice (the row and its label), so labels repeat.
     private func menuRows(_ nodes: [Node]) -> [Node] {
         let keyboard = nodes.filter { $0.type == .keyboard }.map(\.frame)
+        let bars = assistantBars(nodes)
         let screen = nodes.first?.frame ?? .infinite
         return nodes.filter { node in
             Self.knownTitles.contains(node.label)
@@ -390,6 +465,7 @@ final class FlutterMenuUITests: XCTestCase {
                 && !node.frame.isEmpty
                 && screen.contains(CGPoint(x: node.frame.midX, y: node.frame.midY))
                 && !keyboard.contains { $0.intersects(node.frame) }
+                && !node.ancestors.contains { bars.contains($0) }
         }
     }
 
@@ -804,27 +880,58 @@ final class FlutterMenuUITests: XCTestCase {
         return matches.first { $0.type == .menuItem || $0.type == .button || $0.type == .cell } ?? matches.first
     }
 
+    /// The rows really visible on the current page. The accessibility tree of a
+    /// paged bar (iPad iOS 16-18) also lists rows of other pages, clipped by the
+    /// bar or hidden under the page chevron; those cannot be tapped. A row counts
+    /// when its frame lies inside the bar (the rows' container, when it is
+    /// narrower than the screen) and does not overlap a Forward/Back button.
+    private func visibleRows(_ items: [Node], nodes: [Node], app: XCUIApplication) -> [Node] {
+        let pageButtons = try! NSRegularExpression(
+            pattern: "(forward|back|next|previous)", options: .caseInsensitive
+        )
+        let band = items.map(\.frame).reduce(CGRect.null) { $0.union($1) }.insetBy(dx: -40, dy: -24)
+        let chevrons = nodes.filter { node in
+            node.type == .button && !node.frame.isEmpty && node.frame.width <= 90 && node.frame.height <= 90
+                && band.intersects(node.frame)
+                && pageButtons.firstMatch(in: node.label, range: NSRange(node.label.startIndex..., in: node.label)) != nil
+        }.map(\.frame)
+        var bar = app.frame
+        if let container = lowestCommonAncestor(items, nodes: nodes), container.frame.width < app.frame.width * 0.98 {
+            bar = container.frame
+        }
+        bar = bar.insetBy(dx: -1, dy: -1)
+        return items.filter { item in
+            bar.contains(item.frame) && !chevrons.contains { $0.intersection(item.frame).width > 1 }
+        }
+    }
+
     /// Finds `row` in the menu, tapping the chevron as needed. Nil when the
-    /// menu does not offer it or is gone.
+    /// menu does not offer it or is gone. Pages like `expandMenu`: it stops
+    /// when a tap did not change the page or after the menu turned into a
+    /// taller list, not on the height of the first page.
     private func revealRow(_ app: XCUIApplication, _ row: String, notes: inout [String]) -> Node? {
         var lastSet: Set<String> = []
+        var lastSpan: CGFloat?
         for step in 0..<8 {
             let nodes = snapshotNodes(app)
-            let items = menuRows(nodes)
-            if items.isEmpty {
+            let all = menuRows(nodes)
+            if all.isEmpty {
                 notes.append("step\(step): menu gone")
                 return nil
             }
+            let items = visibleRows(all, nodes: nodes, app: app)
             if let match = rowNode(row, in: items) {
                 notes.append("\(row) found at step\(step) among [\(labels(items))]")
                 return match
             }
             let set = Set(items.map(\.label))
-            if set == lastSet || span(items) > 100 {
+            let grew = lastSpan.map { span(items) > $0 + 30 } ?? false
+            if set == lastSet || grew {
                 notes.append("step\(step): \(row) not offered; items=[\(labels(items))]")
                 return nil
             }
             lastSet = set
+            lastSpan = span(items)
             guard let target = chevronTarget(nodes: nodes, app: app) else {
                 notes.append("step\(step): no chevron; items=[\(labels(items))]")
                 return nil
@@ -897,9 +1004,12 @@ final class FlutterMenuUITests: XCTestCase {
                 done.append("relaunch")
                 stopSafari()
                 app.terminate()
-                app.launch()
+                launchWithRetry(app)
                 _ = element(app, "supported").waitForExistence(timeout: 60)
                 pause(1.0)
+                if sizedPage {
+                    done.append("page \(showSizedPage(app))")
+                }
             }
         }
         return done.isEmpty ? "nothing to dismiss" : done.joined(separator: ", ")
@@ -1003,13 +1113,33 @@ final class FlutterMenuUITests: XCTestCase {
             + "deleted=\(deletes.joined(separator: "+")) restored=\(after.text == before.text)")
     }
 
+    /// The first globe tap on a new simulator shows a card over the keys
+    /// ("Quickly Change Keyboards", "Tap <globe> to switch keyboards", Continue).
+    /// Until Continue is tapped it comes back at every globe tap, and the keys
+    /// under it cannot be tapped. Taps Continue; returns a note, or nil when
+    /// the card is not there.
+    private func dismissKeyboardIntro(_ app: XCUIApplication) -> String? {
+        let nodes = snapshotNodes(app)
+        guard nodes.contains(where: { $0.label == "Quickly Change Keyboards" || $0.label.contains("to switch keyboards") }),
+              let button = nodes.first(where: { $0.type == .button && $0.label == "Continue" && !$0.frame.isEmpty })
+        else { return nil }
+        tap(app, at: center(button.frame))
+        pause(1.2)
+        let gone = !snapshotNodes(app).contains { $0.label == "Quickly Change Keyboards" }
+        return "keyboard introduction card: tap Continue, gone=\(gone)"
+    }
+
     /// Brings up an IME keyboard (`ime: true`) or a Latin one by tapping the
     /// globe key and probing after each tap. The focused field's caret must be
-    /// where a probe letter may go. Returns whether it got there, and the steps.
+    /// where a probe letter may go. The keyboard introduction card is closed
+    /// first wherever it shows. Returns whether it got there, and the steps.
     private func switchKeyboard(_ app: XCUIApplication, ime wanted: Bool) -> (ok: Bool, steps: String) {
         guard keyboardShown(app) else { return (false, "no keyboard on screen") }
         var steps: [String] = []
         for attempt in 0..<7 {
+            if let note = dismissKeyboardIntro(app) {
+                steps.append(note)
+            }
             let probe = probeKeyboard(app)
             steps.append("probe\(attempt): \(probe.note)")
             if probe.ime == wanted {
@@ -1081,11 +1211,12 @@ final class FlutterMenuUITests: XCTestCase {
         saveScreenshot("\(scenario)-1-collapsed")
         saveHierarchy("\(scenario)-1-collapsed-hierarchy", app, nodes: nodes)
         guard !rows.isEmpty else {
+            notes.append("collapsed=[]\(assistantBarField(nodes))")
             notes.append("RESULT=no-menu (see the screenshot and hierarchy)")
             summary(scenario, notes)
             return
         }
-        notes.append("collapsed=[\(labels(rows))] all=[\(allMenuLabels(nodes, rows: rows))]")
+        notes.append("collapsed=[\(labels(rows))] all=[\(allMenuLabels(nodes, rows: rows))]\(assistantBarField(nodes))")
         let expansion = expandMenu(app, tag: scenario)
         notes.append("mode=\(expansion.mode) pages=\(expansion.pages.count)")
         for (index, page) in expansion.pages.enumerated() {
@@ -1241,9 +1372,12 @@ final class FlutterMenuUITests: XCTestCase {
             done.append("app not in front: relaunch")
             stopSafari()
             app.terminate()
-            app.launch()
+            launchWithRetry(app)
             _ = element(app, "supported").waitForExistence(timeout: 60)
             pause(1.0)
+            if sizedPage {
+                done.append("page \(showSizedPage(app))")
+            }
         }
         return done.joined(separator: ", ")
     }
@@ -1885,9 +2019,9 @@ final class FlutterMenuUITests: XCTestCase {
         let scenario = id
         let spec = Self.spec(id)
         let other = Self.spec(id == "sized-plain" ? "sized-email" : "sized-plain")
-        guard let app = launchApp(scenario, page: "sized") else { return }
+        guard let app = launchApp(scenario, sized: true) else { return }
         defer { app.terminate() }
-        var notes = ["start=\(Self.stamp())", supportedLine(app)]
+        var notes = ["start=\(Self.stamp())", supportedLine(app), "page=\(showSizedPage(app))"]
         var exercised = "no (the word was not selected with the menu shown)"
         var result = "recorded (compare the steps between runs)"
         defer { summary(scenario, notes) }
@@ -1899,7 +2033,7 @@ final class FlutterMenuUITests: XCTestCase {
             saveScreenshot("\(scenario)-0-page-missing")
             saveText("\(scenario)-0-page-missing-hierarchy", describe(snapshotNodes(app)))
             exercised = "no (the sized page is not on screen)"
-            result = "page-not-shown (PROBE_PAGE=sized did not reach the app)"
+            result = "page-not-shown (the page button did not bring up the sized page)"
             return
         }
         notes.append("expectedFrame=\(Self.sizedFrames[id] ?? "?") screen=\(Int(app.frame.width))x\(Int(app.frame.height))")
@@ -1909,7 +2043,7 @@ final class FlutterMenuUITests: XCTestCase {
         let nodes = waitForMenu(app)
         let rows = menuRows(nodes)
         notes.append("1 select=\(selection.ok ? "ok" : "FAILED") (\(selection.how)) collapsed=[\(labels(rows))] "
-            + "all=[\(allMenuLabels(nodes, rows: rows))] unrequested=[\(unrequested(rows))]")
+            + "all=[\(allMenuLabels(nodes, rows: rows))] unrequested=[\(unrequested(rows))]\(assistantBarField(nodes))")
         saveScreenshot("\(scenario)-1-collapsed")
         saveHierarchy("\(scenario)-1-collapsed-hierarchy", app, nodes: nodes)
         if selection.ok, !rows.isEmpty {
@@ -1969,8 +2103,8 @@ final class FlutterMenuUITests: XCTestCase {
             let after = snapshotNodes(app)
             let afterRows = menuRows(after)
             let status = readStatus(app)
-            notes.append("\(name): how=\(how) menu=[\(labels(afterRows))] unrequested=[\(unrequested(afterRows))] "
-                + "foreign=[\(foreignElements(after))] status: \(status.oneLine)")
+            notes.append("\(name): how=\(how) menu=[\(labels(afterRows))] unrequested=[\(unrequested(afterRows))]"
+                + "\(assistantBarField(after)) foreign=[\(foreignElements(after))] status: \(status.oneLine)")
             saveScreenshot("\(scenario)-\(name)")
             saveHierarchy("\(scenario)-\(name)-hierarchy", app, nodes: after)
         }
@@ -1988,17 +2122,36 @@ final class FlutterMenuUITests: XCTestCase {
 
     // MARK: - Scenario: showcase clip
 
-    /// When the workflow started the screen recording, if it wrote that down.
-    private func recordingStart() -> TimeInterval? {
-        let file = outDir.appendingPathComponent("recording-start.txt")
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return nil }
-        return TimeInterval(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    /// Writes a signal file for the workflow's recorder into PROBE_OUT.
+    private func signal(_ name: String) {
+        write(Data(Self.stamp().utf8), to: outDir.appendingPathComponent(name))
     }
 
-    /// A short, slow sequence for the screen recording: select a word, show
-    /// the menu, expand (iOS 26) or page (17/18) it, Look Up and close its
-    /// sheet, the menu again, Copy. `clipStart=` and `clipEnd=` are wall-clock
-    /// times; `clipFrom=` and `clipTo=` are seconds into recording.mp4.
+    /// Waits for a signal file the workflow writes into PROBE_OUT.
+    private func waitForSignal(_ name: String, timeout: TimeInterval) -> Bool {
+        let path = outDir.appendingPathComponent(name).path
+        let end = Date().addingTimeInterval(timeout)
+        while Date() < end, !FileManager.default.fileExists(atPath: path) {
+            pause(0.5)
+        }
+        return FileManager.default.fileExists(atPath: path)
+    }
+
+    /// A short, slow sequence for its own recording, `showcase.mp4`: select a
+    /// word, show the menu, expand (iOS 26) or page (17/18) it, Look Up and
+    /// close its sheet, the menu again, Copy. The workflow runs it in its own
+    /// xcodebuild and records only while the app is set up: the test writes
+    /// `showcase-ready` when the opening picture is on screen, the workflow
+    /// starts `simctl io recordVideo` and answers `showcase-recording`; at the
+    /// end the test writes `showcase-done` and keeps the app in front until
+    /// the workflow answers `showcase-stopped`. Both ends hold a still picture
+    /// (the caret blinking at the end of the field) for about 1.5 s.
+    ///
+    /// Before that, a warm-up Look Up that is not recorded: the first Look Up
+    /// on a new simulator shows a first-run card ("Look Up now shows
+    /// personalized suggestions", Continue) instead of a result; Continue is
+    /// tapped there. When the warm-up could only get back to the app by a
+    /// relaunch, Look Up is left out of the clip.
     private func showcase() {
         let scenario = "showcase"
         guard let app = launchApp(scenario) else { return }
@@ -2006,9 +2159,37 @@ final class FlutterMenuUITests: XCTestCase {
         let spec = Self.spec("single")
         var notes = ["start=\(Self.stamp())", supportedLine(app)]
         defer { summary(scenario, notes) }
+
+        // Warm-up (not recorded).
+        var lookUpUsable = false
+        var warmNotes: [String] = []
+        let warm = focusAndSelect(app, spec, word: "harbor")
+        if warm.ok, !menuRows(waitForMenu(app)).isEmpty, menuTap(app, "Look Up", notes: &warmNotes) {
+            let seen = observeAfterTap(app, row: "Look Up")
+            var card = "none"
+            let continueButton = app.buttons.matching(NSPredicate(format: "label == 'Continue'")).firstMatch
+            if inFront(app), continueButton.exists, continueButton.isHittable {
+                continueButton.tap()
+                pause(2.0)
+                card = "Continue tapped"
+            }
+            saveScreenshot("\(scenario)-0-warmup-lookup")
+            let closed = returnToApp(app)
+            lookUpUsable = seen.outcome == "sheet" && !closed.contains("relaunch")
+            notes.append("warmUp lookUp outcome=\(seen.outcome) firstRunCard=\(card) closedBy=\(closed)")
+        } else {
+            notes.append("warmUp: Look Up not reached (select=\(warm.ok))")
+        }
+
+        // The opening picture: no menu, the caret at the end of the field.
         resetApp(app)
+        let focused = focusEnd(app, spec)
+        pause(1.0)
+        signal("showcase-ready")
+        let recording = waitForSignal("showcase-recording", timeout: 60)
+        notes.append("recording=\(recording ? "started" : "not started (no showcase-recording signal within 60 s)") "
+            + "caretAtStart=\(focused)")
         pause(1.5)
-        let clipStart = Date().timeIntervalSince1970
         notes.append("clipStart=\(Self.stamp())")
 
         let selection = focusAndSelect(app, spec, word: "harbor", reset: false)
@@ -2022,13 +2203,26 @@ final class FlutterMenuUITests: XCTestCase {
         } else {
             notes.append("2 no chevron")
         }
-        if menuTap(app, "Look Up", notes: &notes) {
-            let seen = observeAfterTap(app, row: "Look Up")
-            pause(2.0)
-            notes.append("3 lookUp outcome=\(seen.outcome) closedBy=\(returnToApp(app))")
-            pause(1.5)
+        if !lookUpUsable {
+            notes.append("3 Look Up left out (see warmUp)")
         } else {
-            notes.append("3 Look Up not available")
+            if rowNode("Look Up", in: menuRows(snapshotNodes(app))) == nil {
+                // A paged menu (iOS 17/18) shows the next page now; Look Up
+                // is on the first one, which a double tap on the word brings back.
+                if let rect = readStatus(app).rect(of: "harbor") {
+                    doubleTap(app, at: center(rect))
+                }
+                pause(1.5)
+                notes.append("3 menu shown again for Look Up: [\(labels(menuRows(waitForMenu(app))))]")
+            }
+            if menuTap(app, "Look Up", notes: &notes) {
+                let seen = observeAfterTap(app, row: "Look Up")
+                pause(2.0)
+                notes.append("3 lookUp outcome=\(seen.outcome) closedBy=\(returnToApp(app))")
+                pause(1.5)
+            } else {
+                notes.append("3 Look Up not available")
+            }
         }
         if let rect = readStatus(app).rect(of: "harbor") {
             doubleTap(app, at: center(rect))
@@ -2046,15 +2240,16 @@ final class FlutterMenuUITests: XCTestCase {
         pause(1.5)
         let copied = shown && menuTap(app, "Copy", notes: &notes)
         pause(1.5)
-        let clipEnd = Date().timeIntervalSince1970
         notes.append("5 copy=\(copied) status: \(readStatus(app).oneLine)")
-        notes.append("clipEnd=\(Self.stamp())")
-        if let recording = recordingStart() {
-            notes.append(String(format: "clipFrom=%.1fs clipTo=%.1fs", clipStart - recording, clipEnd - recording))
-        } else {
-            notes.append("clipFrom=unknown (no recording-start.txt)")
-        }
-        notes.append("RESULT=\(selection.ok && copied ? "ok" : "partial")")
+
+        // The closing picture: the caret at the end of the field again.
+        let focusedAtEnd = focusEnd(app, spec)
+        pause(1.5)
+        notes.append("clipEnd=\(Self.stamp()) caretAtEnd=\(focusedAtEnd)")
+        signal("showcase-done")
+        let stopped = recording && waitForSignal("showcase-stopped", timeout: 60)
+        notes.append("recordingStopped=\(stopped) inApp=\(inFront(app))")
+        notes.append("RESULT=\(selection.ok && copied && recording && stopped ? "ok" : "partial")")
     }
 
     // MARK: - Output
