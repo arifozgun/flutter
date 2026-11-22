@@ -918,8 +918,6 @@ static void EditMenuDiagLogStack(UIView* view, NSString* label) {
   // Counts edit menu presentations. Each presentation uses it as its configuration identifier, so
   // that the dismissal of an older menu does not detach the interaction a newer menu relies on.
   NSUInteger _editMenuPresentationCount;
-  // Set while this view attaches or removes _editMenuTextInteraction. See setInputDelegate:.
-  BOOL _isChangingEditMenuTextInteraction;
 }
 
 @synthesize tokenizer = _tokenizer;
@@ -1313,9 +1311,7 @@ static void EditMenuDiagLogStack(UIView* view, NSString* label) {
 
 - (void)removeEditMenuTextInteraction {
   if (_editMenuTextInteraction.view == self) {
-    _isChangingEditMenuTextInteraction = YES;
     [self removeInteraction:_editMenuTextInteraction];
-    _isChangingEditMenuTextInteraction = NO;
   }
 }
 
@@ -1390,9 +1386,7 @@ static void EditMenuDiagLogStack(UIView* view, NSString* label) {
       _editMenuTextInteraction.textInput = self;
     }
     if (_editMenuTextInteraction.view != self) {
-      _isChangingEditMenuTextInteraction = YES;
       [self addInteraction:_editMenuTextInteraction];
-      _isChangingEditMenuTextInteraction = NO;
     }
   } else {
     BOOL diagAttached = _editMenuTextInteraction.view == self;
@@ -1535,20 +1529,11 @@ static void EditMenuDiagLogStack(UIView* view, NSString* label) {
   _hasPlaceholder = NO;
 }
 
-// UIKit sets inputDelegate when this view becomes first responder, and setTextInputState: reports
-// the framework's text and selection changes to it. Adding a UITextInteraction makes UIKit set
-// inputDelegate to the interaction's own delegate object instead. Assignments made while the edit
-// menu's interaction is added or removed are ignored, so these reports keep reaching the delegate
-// UIKit set for the first responder, while the menu is shown and after it. Other assignments,
-// including the ones for the interaction setTextInputState: adds, are applied.
+// EDITMENU_DIAG: logs every assignment. Nothing is ignored.
 - (void)setInputDelegate:(id<UITextInputDelegate>)inputDelegate {
-  EditMenuDiagLog(self, @"setInputDelegate %@ old=%@ new=%@ guard=%d menuInteractionAttached=%d",
-                  _isChangingEditMenuTextInteraction ? @"ignored" : @"accepted",
+  EditMenuDiagLog(self, @"setInputDelegate accepted old=%@ new=%@ menuInteractionAttached=%d",
                   EditMenuDiagDescribe(_inputDelegate), EditMenuDiagDescribe(inputDelegate),
-                  _isChangingEditMenuTextInteraction, _editMenuTextInteraction.view == self);
-  if (_isChangingEditMenuTextInteraction) {
-    return;
-  }
+                  _editMenuTextInteraction.view == self);
   _inputDelegate = inputDelegate;
 }
 
