@@ -369,6 +369,12 @@ final class IOSSystemContextMenuItemSelectAll extends IOSSystemContextMenuItem {
 /// platform. Typically it should be set to
 /// [WidgetsLocalizations.lookUpButtonLabel].
 ///
+/// On iOS 17 and above, the platform shows its own look up group in place of
+/// this item, with the platform's own titles. That group can also hold the
+/// platform's Translate button, and the platform decides which of its buttons
+/// it shows. The [title] is displayed on earlier versions of iOS, and when the
+/// platform offers no look up group.
+///
 /// The action is handled by the platform.
 ///
 /// See also:
@@ -403,7 +409,12 @@ final class IOSSystemContextMenuItemLookUp extends IOSSystemContextMenuItem with
 ///
 /// The [title] is optional, but it must be specified before being sent to the
 /// platform. Typically it should be set to
-/// [WidgetsLocalizations.searchWebButtonLabel].
+/// [WidgetsLocalizations.searchWebButtonLabel]. The [title] is displayed on all
+/// versions of iOS.
+///
+/// On iOS 17 and above, when the platform's look up group is shown for an
+/// [IOSSystemContextMenuItemLookUp], this button is shown at the end of that
+/// group.
 ///
 /// The action is handled by the platform.
 ///
@@ -444,6 +455,10 @@ final class IOSSystemContextMenuItemSearchWeb extends IOSSystemContextMenuItem w
 /// The [title] is optional, but it must be specified before being sent to the
 /// platform. Typically it should be set to
 /// [WidgetsLocalizations.shareButtonLabel].
+///
+/// On iOS 17 and above, the platform shows its own share button in place of
+/// this item, with the platform's own title. The [title] is displayed on
+/// earlier versions of iOS, and when the platform offers no share button.
 ///
 /// See also:
 ///
@@ -497,6 +512,11 @@ final class IOSSystemContextMenuItemLiveText extends IOSSystemContextMenuItem {
 /// Only supported on iOS 16.0 and above.
 ///
 /// The [title] and [onPressed] callback must be provided.
+///
+/// On iOS 17 and above, the built-in cut, copy, paste, select all and Live Text
+/// buttons are shown as one group, at the position of the first of them in
+/// [SystemContextMenu.items]. Custom items are never shown inside that group,
+/// so a custom item listed between built-in editing items is shown after it.
 ///
 /// {@tool dartpad}
 /// This example shows how to add custom menu items to the iOS system context menu.

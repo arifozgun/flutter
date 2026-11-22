@@ -4944,10 +4944,10 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
   }
 }
 
-// The UIKit behaviour setInputDelegate: guards against: attaching a text interaction replaces the
-// view's inputDelegate, and removing it leaves inputDelegate nil. This interaction is not the edit
-// menu's, so the view applies both assignments.
-- (void)testEditMenu_textInteractionReplacesAndClearsInputDelegate {
+// The UIKit behaviour setInputDelegate: guards against: adding a text interaction replaces the
+// view's inputDelegate. This interaction is not the edit menu's, so the view applies the
+// assignment.
+- (void)testEditMenu_textInteractionReplacesInputDelegate {
   if (@available(iOS 17.0, *)) {
     NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
     FlutterTextInputView* inputView =
@@ -4961,9 +4961,34 @@ class MockPlatformViewDelegate : public PlatformView::Delegate {
     [inputView addInteraction:textInteraction];
     XCTAssertNotNil(inputView.inputDelegate);
     XCTAssertNotEqual(inputView.inputDelegate, keyboardDelegate);
-
     [inputView removeInteraction:textInteraction];
-    XCTAssertNil(inputView.inputDelegate);
+  }
+}
+
+// Text and selection changes from the framework keep reaching the delegate UIKit set while the
+// edit menu's interaction is attached.
+- (void)testEditMenu_changesAreReportedToInputDelegateWhileTextInteractionIsAttached {
+  if (@available(iOS 17.0, *)) {
+    NSMutableArray<UIEditMenuConfiguration*>* configurations = [NSMutableArray array];
+    FlutterTextInputView* inputView =
+        [self editMenuInputViewRecordingConfigurations:configurations];
+    id keyboardDelegate = OCMProtocolMock(@protocol(UITextInputDelegate));
+    inputView.inputDelegate = keyboardDelegate;
+
+    [self showEditMenuWithItems:@[ @{@"type" : @"lookUp", @"title" : @"Look Up"} ]];
+    XCTAssertTrue([self hasTextInteraction:inputView]);
+
+    [inputView setTextInputState:@{
+      @"text" : @"CHANGED",
+      @"selectionBase" : @1,
+      @"selectionExtent" : @3,
+      @"composingBase" : @-1,
+      @"composingExtent" : @-1
+    }];
+    OCMVerify([keyboardDelegate textWillChange:[OCMArg any]]);
+    OCMVerify([keyboardDelegate selectionWillChange:[OCMArg any]]);
+    OCMVerify([keyboardDelegate selectionDidChange:[OCMArg any]]);
+    OCMVerify([keyboardDelegate textDidChange:[OCMArg any]]);
   }
 }
 
